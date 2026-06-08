@@ -1,0 +1,14 @@
+{
+    "wifi": {
+        "ssid": "YOUR-SSID",
+        "password": "YOUR-PASSWORD"
+    },
+    "i2c": { "scl": 9, "sda": 8, "freq": 400000 },
+    "dc": {
+        "pins": {
+            "pwma": 1, "ain2": 2, "ain1": 3,
+            "stby": 4,
+            "bin1": 5, "bin2": 6, "pwmb": 43
+        }
+    }
+}

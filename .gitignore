@@ -1,0 +1,16 @@
+# Runtime config — contains WiFi credentials; NEVER commit this
+config.json
+
+# MicroPython / CPython cache
+__pycache__/
+*.pyc
+*.pyo
+*.mpy
+
+# macOS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
+*.iml
