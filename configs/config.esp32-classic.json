@@ -3,6 +3,7 @@
         "ssid": "YOUR-SSID",
         "password": "YOUR-PASSWORD"
     },
+    "brain": { "host": "HOST-IP", "port": 9090 },
     "i2c": { "scl": 22, "sda": 21, "freq": 400000 },
     "dc": {
         "pins": {

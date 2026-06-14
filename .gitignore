@@ -3,14 +3,22 @@ config.json
 
 # MicroPython / CPython cache
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
 *.mpy
 
-# macOS
-.DS_Store
+# mpremote / rshell 作業ファイル
+*.log
 
-# Editor
+# Editors
 .vscode/
 .idea/
 *.iml
+*.swp
+*~
+
+# macOS
+.DS_Store
+.AppleDouble
+
+# Windows
+Thumbs.db

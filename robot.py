@@ -6,7 +6,6 @@ WebSocket message protocol (rosbridge v2.0 compatible JSON):
   inbound — robot operation (publish):
     {"op":"publish","topic":"/cmd_vel",       "msg":{geometry_msgs/Twist}}
     {"op":"publish","topic":"/servo/command", "msg":{trajectory_msgs/JointTrajectory}}
-    {"op":"subscribe","topic":"/odom"}
 
   inbound — control / config:
     {"op":"set_mode",   "modes":{...}}
@@ -14,9 +13,12 @@ WebSocket message protocol (rosbridge v2.0 compatible JSON):
     {"op":"get_config"}                   → replies with set_config
 
   outbound:
-    {"op":"publish","topic":"/odom",         "msg":{nav_msgs/Odometry}}
+    {"op":"publish","topic":"/wheel_vel",    "msg":{left, right (m/s), dt (s)}}
     {"op":"publish","topic":"/joint_states", "msg":{sensor_msgs/JointState}}
     {"op":"notice", "message":"..."}
+
+  Note: raw wheel velocities are published; smabo-brain integrates them
+  into nav_msgs/Odometry (so it can be fused with IMU/GPS).
 """
 
 import json
@@ -36,6 +38,7 @@ except AttributeError:
 from servo_controller import JointGroup
 from random_motion import RandomMotion
 from dc_motors import DiffDrive
+from wheel_publisher import WheelPublisher
 
 
 def _reboot_reasons(config_dict):
@@ -78,8 +81,8 @@ class Robot:
             The shared configuration instance.
         pca : pca9685.PCA9685
             The servo PWM controller shared by all joints.
-        ws : ws_server.WSServer
-            The WebSocket server used to broadcast outbound messages.
+        ws : ws_client.WSClient
+            The WebSocket client to smabo-brain, used to send outbound messages.
         """
         self.cfg = config
         self.pca = pca
@@ -89,7 +92,7 @@ class Robot:
         self.random_motion = None   # RandomMotion instance
         self.drive         = None   # DiffDrive
         self.encoders      = None
-        self.odom          = None
+        self.wheel_pub     = None
 
         self._tasks = {}
 
@@ -109,8 +112,14 @@ class Robot:
         Returns
         -------
         None
+
+        Notes
+        -----
+        The source prefix ``/esp32`` is prepended so smabo-brain can identify
+        the origin and strip it before re-broadcasting under the canonical
+        topic name.
         """
-        self.ws.broadcast(json.dumps({"op": "publish", "topic": topic, "msg": msg}))
+        self.ws.broadcast(json.dumps({"op": "publish", "topic": "/esp32" + topic, "msg": msg}))
 
     def _notice(self, message):
         """Broadcast a ``notice`` op (informational message) to all clients.
@@ -244,19 +253,19 @@ class Robot:
         if self.drive is not None:
             self.drive.stop()
         self.drive    = None
-        self.encoders = None
-        self.odom     = None
+        self.encoders  = None
+        self.wheel_pub = None
 
     def enable_drive(self, with_encoder):
-        """Start the differential drive, optionally with encoder odometry.
+        """Start the differential drive, optionally with wheel feedback.
 
-        Creates the DiffDrive (and, if requested, the encoders/odometry) on
-        first use and spawns the watchdog (and odom publisher) tasks.
+        Creates the DiffDrive (and, if requested, the encoders/wheel publisher)
+        on first use and spawns the watchdog (and wheel_vel publisher) tasks.
 
         Parameters
         ----------
         with_encoder : bool
-            If True, also create encoders/odometry and publish ``/odom``.
+            If True, also create encoders and publish ``/wheel_vel``.
 
         Returns
         -------
@@ -267,14 +276,13 @@ class Robot:
         self._spawn("drive_wd", self.drive.watchdog_task())
         if with_encoder:
             from encoder import QuadEncoder
-            from odometry import Odometry
             if self.encoders is None:
                 el = self.cfg.get("encoder.left")
                 er = self.cfg.get("encoder.right")
-                self.encoders = (QuadEncoder(el["a"], el["b"]),
-                                 QuadEncoder(er["a"], er["b"]))
-                self.odom = Odometry(self.cfg, self.encoders[0], self.encoders[1])
-            self._spawn("odom", self.odom.run(self.publish))
+                self.encoders  = (QuadEncoder(el["a"], el["b"]),
+                                  QuadEncoder(er["a"], er["b"]))
+                self.wheel_pub = WheelPublisher(self.cfg, self.encoders[0], self.encoders[1])
+            self._spawn("odom", self.wheel_pub.run(self.publish))
 
     def disable_drive(self):
         """Stop drive tasks and motors but keep the DiffDrive object for reuse.

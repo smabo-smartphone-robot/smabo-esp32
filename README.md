@@ -2,7 +2,7 @@
 
 ESP32用ロボットファームウェア（MicroPython製）。
 
-スマホアプリ（smabo-app）からのWebSocket JSON命令を受け取り、走行・サーボ・オドメトリを制御します。
+中継サーバ（smabo-brain）へWebSocketクライアントとして接続し、JSON命令を受け取って走行・サーボを制御します。エンコーダのホイール速度を送信し、オドメトリの積分は smabo-brain 側で行います。
 
 
 
@@ -40,11 +40,15 @@ cp configs/config.esp32-classic.json config.json
     "wifi": {
         "ssid": "YOUR-SSID",
         "password": "YOUR-PASSWORD"
+    },
+    "brain": {
+        "host": "192.168.1.100",
+        "port": 9090
     }
 }
 ```
 
-他の設定は省略すると `config.py` の DEFAULTS が使われます。
+`brain.host` には smabo-brain を動かすマシンの IP を指定します（必須）。他の設定は省略すると `config.py` の DEFAULTS が使われます。
 
 ### 3. ファイルを転送する
 
@@ -60,7 +64,7 @@ mpremote connect /dev/ttyUSB0 cp *.py :
 
 ```bash
 mpremote connect /dev/ttyUSB0 repl
-# Ctrl+D でソフトリセット → シリアルログで WiFi 接続と WebSocket 待受を確認
+# Ctrl+D でソフトリセット → シリアルログで WiFi 接続と smabo-brain への接続を確認
 ```
 
 
@@ -71,14 +75,14 @@ mpremote connect /dev/ttyUSB0 repl
 | `main.py` | 起動エントリ・asyncio イベントループ |
 | `config.py` | 永続設定（RAM + config.json、デバウンス保存） |
 | `wifi_manager.py` | WiFi 接続・自動再接続 |
-| `ws_server.py` | RFC 6455 WebSocket サーバ（外部ライブラリ不要） |
+| `ws_client.py` | RFC 6455 WebSocket クライアント（smabo-brainへ接続・自動再接続、外部ライブラリ不要） |
 | `robot.py` | オーケストレータ（rosbridgeプロトコル・モード管理） |
 | `pca9685.py` | PCA9685 PWM ドライバ（サーボ用 I2C） |
 | `servo_controller.py` | JointGroup（全サーボ共通） |
 | `random_motion.py` | グループ単位のランダム動作 |
 | `dc_motors.py` | TB6612 差動駆動（cmd_vel受信・デッドマン停止） |
 | `encoder.py` | GPIO割り込みによるエンコーダカウント |
-| `odometry.py` | 差動駆動オドメトリ → nav_msgs/Odometry |
+| `wheel_publisher.py` | エンコーダ → ホイール速度（/wheel_vel）送信 |
 
 
 ## 設定テンプレート
@@ -94,7 +98,7 @@ mpremote connect /dev/ttyUSB0 repl
 
 ## 通信プロトコル
 
-WebSocket `ws://<ESP32-IP>:9090` でJSON送受信。フォーマットはrosbridgeの v2.0 互換。認証なし（信頼済みLAN内利用前提）。
+起動時に smabo-brain（`ws://<brain-host>:<port>/esp32`、接続先は `config.json` の `brain` で指定）へクライアントとして接続し、JSON送受信します。フォーマットはrosbridgeの v2.0 互換。認証なし（信頼済みLAN内利用前提）。
 
 主なトピック:
 
@@ -102,7 +106,7 @@ WebSocket `ws://<ESP32-IP>:9090` でJSON送受信。フォーマットはrosbrid
 |------|---------|------|
 | 受信 | `/cmd_vel` | 走行速度指令 |
 | 受信 | `/servo/command` | サーボ軌道指令 |
-| 送信 | `/odom` | オドメトリ |
+| 送信 | `/wheel_vel` | ホイール速度（left/right m/s, dt）。オドメトリ積分は smabo-brain 側 |
 | 送信 | `/joint_states` | 関節角度 |
 
 

@@ -70,7 +70,11 @@ DEFAULTS = {
         "password": "your-password",
         "hostname": "esp32-robot",
     },
-    "ws": {"port": 9090},
+    # smabo-brain relay server to connect to
+    "brain": {
+        "host": "192.168.1.100",
+        "port": 9090,
+    },
     "i2c": {"sda": 21, "scl": 22, "freq": 400000},  # classic ESP32 default
     "pca9685": {"address": 0x40, "freq": 50},
 
