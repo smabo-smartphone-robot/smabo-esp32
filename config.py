@@ -97,20 +97,21 @@ DEFAULTS = {
     "servos": {
         "behavior": "manual",   # "manual" | "random"
         "joints": {
-            "head_pan":    _servo(0, -90, 90, 0, 120),
-            "head_tilt":   _servo(1, -45, 45, 0, 120),
-            "left_hand":   _servo(2,   0, 90, 0,   0),
-            "right_hand":  _servo(3,   0, 90, 0,   0),
-            # arm joints — add/remove to match the number of axes on your robot
-            "arm_joint_1": _servo(4, -90, 90, 0,  90),
-            "arm_joint_2": _servo(5, -90, 90, 0,  90),
-            "arm_joint_3": _servo(6, -90, 90, 0,  90),
-            "arm_joint_4": _servo(7, -90, 90, 0,  90),
+            # ch 0-1: hand (2 servos)
+            "left_hand":   _servo(0,   0, 90, 0,   0),
+            "right_hand":  _servo(1,   0, 90, 0,   0),
+            # ch 2: neck pan only (tilt removed)
+            "head_pan":    _servo(2, -90, 90, 0, 120),
+            # ch 3-6: arm joints — add/remove to match the number of axes on your robot
+            "arm_joint_1": _servo(3, -90, 90, 0,  90),
+            "arm_joint_2": _servo(4, -90, 90, 0,  90),
+            "arm_joint_3": _servo(5, -90, 90, 0,  90),
+            "arm_joint_4": _servo(6, -90, 90, 0,  90),
         },
         "random_groups": [
             # joints listed together fire simultaneously (angles are random per joint)
-            {"name": "neck",  "joints": ["head_pan", "head_tilt"], "interval": [1.0, 3.0]},
             {"name": "hands", "joints": ["left_hand", "right_hand"], "interval": [2.0, 5.0]},
+            {"name": "neck",  "joints": ["head_pan"], "interval": [1.0, 3.0]},
         ],
         # Rate at which /joint_states is published (required by MoveIt2).
         # Set to 0 to disable.

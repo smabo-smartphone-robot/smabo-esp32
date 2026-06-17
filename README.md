@@ -4,6 +4,8 @@ ESP32用ロボットファームウェア（MicroPython製）。
 
 中継サーバ（smabo-brain）へWebSocketクライアントとして接続し、JSON命令を受け取って走行・サーボを制御します。エンコーダのホイール速度を送信し、オドメトリの積分は smabo-brain 側で行います。
 
+設定（config / mode）は WebSocket ではなく、ESP32 が直接公開する **REST API** で smabo-web から読み書きします（`http_server.py`）。リアルタイム制御・テレメトリは従来どおり smabo-brain 経由の WebSocket です。
+
 
 
 ## 動作環境
@@ -76,6 +78,7 @@ mpremote connect /dev/ttyUSB0 repl
 | `config.py` | 永続設定（RAM + config.json、デバウンス保存） |
 | `wifi_manager.py` | WiFi 接続・自動再接続 |
 | `ws_client.py` | RFC 6455 WebSocket クライアント（smabo-brainへ接続・自動再接続、外部ライブラリ不要） |
+| `http_server.py` | config/mode の REST API サーバ（smabo-web が直接アクセス、CORS 対応） |
 | `robot.py` | オーケストレータ（rosbridgeプロトコル・モード管理） |
 | `pca9685.py` | PCA9685 PWM ドライバ（サーボ用 I2C） |
 | `servo_controller.py` | JointGroup（全サーボ共通） |
@@ -108,6 +111,22 @@ mpremote connect /dev/ttyUSB0 repl
 | 受信 | `/servo/command` | サーボ軌道指令 |
 | 送信 | `/wheel_vel` | ホイール速度（left/right m/s, dt）。オドメトリ積分は smabo-brain 側 |
 | 送信 | `/joint_states` | 関節角度 |
+| 送信 | `set_config` | 全 config スナップショット。smabo-brain のオドメトリ同期用（下記参照） |
+
+### 設定 REST API（smabo-web ↔ ESP32 直通）
+
+config / mode は smabo-brain を介さず、ESP32 の HTTP サーバ（既定 `:80`、CORS 全許可）に
+smabo-web から直接アクセスします。
+
+| メソッド | パス | 内容 |
+|----------|------|------|
+| `GET`  | `/config` | 現在の全 config を JSON で返す |
+| `POST` | `/config` | config パッチを deep-merge（ピン/バス/WiFi 変更時は再起動） |
+| `POST` | `/mode`   | サブシステムの有効/無効（servos / dc_drive / encoder_drive） |
+
+smabo-brain のオドメトリ積分は車輪ジオメトリ・共分散・frame 名を必要とするため、
+ESP32 は brain への接続時および config/mode 変更時に、全 config を WebSocket で
+`{"op":"set_config","config":{…}}` として brain に push します（brain 内部の odom 同期専用）。
 
 
 

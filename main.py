@@ -19,6 +19,7 @@ except ImportError:
 from config import Config
 from pca9685 import PCA9685
 from ws_client import WSClient
+from http_server import ConfigHTTPServer
 from robot import Robot
 import wifi_manager
 
@@ -46,16 +47,23 @@ async def amain():
     def on_message(client, text):
         return robot_ref["robot"].on_message(client, text)
 
+    def on_connect():
+        # Push current config so brain's odometry integrator is in sync;
+        # config itself is set by smabo-web over REST (http_server.py).
+        return robot_ref["robot"].sync_config_to_brain()
+
     ws = WSClient(
         host=cfg.get("brain.host", "192.168.1.100"),
         port=cfg.get("brain.port", 9090),
         path="/esp32",
         on_message=on_message,
+        on_connect=on_connect,
     )
     robot = Robot(cfg, pca, ws)
     robot_ref["robot"] = robot
 
     asyncio.create_task(ws.run())
+    asyncio.create_task(ConfigHTTPServer(robot, cfg.get("http.port", 80)).run())
     robot.start()
 
     asyncio.create_task(cfg.autosave_task())

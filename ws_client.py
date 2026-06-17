@@ -49,11 +49,12 @@ class WSClient:
     kept for API compatibility.
     """
 
-    def __init__(self, host, port, path, on_message):
+    def __init__(self, host, port, path, on_message, on_connect=None):
         self.host = host
         self.port = port
         self.path = path
         self.on_message = on_message   # callable(client, text)
+        self.on_connect = on_connect   # optional callable() run after each connect
         self._writer = None
 
     # ------------------------------------------------------------------ #
@@ -92,6 +93,13 @@ class WSClient:
             await self._handshake(reader, writer)
             self._writer = writer
             print("WSClient: connected to %s:%d%s" % (self.host, self.port, self.path))
+            if self.on_connect is not None:
+                try:
+                    res = self.on_connect()
+                    if hasattr(res, "__await__"):
+                        await res
+                except Exception as e:
+                    print("WSClient on_connect error:", e)
             await self._read_loop(reader, writer)
         finally:
             self._writer = None

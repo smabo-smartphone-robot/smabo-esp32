@@ -1,24 +1,27 @@
 """Orchestrator: wires subsystems together, handles the rosbridge protocol,
 and manages which modes are active.
 
-WebSocket message protocol (rosbridge v2.0 compatible JSON):
+WebSocket message protocol (rosbridge v2.0 compatible JSON), via smabo-brain:
 
   inbound — robot operation (publish):
     {"op":"publish","topic":"/cmd_vel",       "msg":{geometry_msgs/Twist}}
     {"op":"publish","topic":"/servo/command", "msg":{trajectory_msgs/JointTrajectory}}
 
-  inbound — control / config:
-    {"op":"set_mode",   "modes":{...}}
-    {"op":"set_config", "config":{...}}   reloads subsystems; pin changes → reboot
-    {"op":"get_config"}                   → replies with set_config
-
   outbound:
     {"op":"publish","topic":"/wheel_vel",    "msg":{left, right (m/s), dt (s)}}
     {"op":"publish","topic":"/joint_states", "msg":{sensor_msgs/JointState}}
+    {"op":"set_config","config":{...}}       full config snapshot for brain's
+                                             odometry sync (see below)
     {"op":"notice", "message":"..."}
 
   Note: raw wheel velocities are published; smabo-brain integrates them
   into nav_msgs/Odometry (so it can be fused with IMU/GPS).
+
+Config / mode are NOT handled over WebSocket — smabo-web sets them directly
+via the REST API in http_server.py (GET/POST /config, POST /mode).  After a
+change (and on each brain reconnect) the full config is pushed to smabo-brain
+over WebSocket so its odometry integrator stays in sync with the wheel
+geometry / covariance / frame names.
 """
 
 import json
@@ -134,6 +137,63 @@ class Robot:
         None
         """
         self.ws.broadcast(json.dumps({"op": "notice", "message": message}))
+
+    def sync_config_to_brain(self):
+        """Push the full config to smabo-brain so its odometry stays in sync.
+
+        Config is otherwise set directly by smabo-web over REST (and never
+        flows through brain), but brain's odometry integrator needs the wheel
+        geometry / covariance / frame names.  Called on every brain (re)connect
+        and after each REST config/mode change.
+
+        Returns
+        -------
+        None
+        """
+        self.ws.broadcast(json.dumps({"op": "set_config", "config": self.cfg.data}))
+
+    # ------------------------------------------------------------------ #
+    # config / mode REST API (called by http_server.ConfigHTTPServer)
+    # ------------------------------------------------------------------ #
+    def config_json(self):
+        """Return the full live config dict (for ``GET /config``).
+
+        Returns
+        -------
+        dict
+            The current configuration.
+        """
+        return self.cfg.data
+
+    def set_config(self, patch):
+        """Apply a config patch from REST, then resync brain (``POST /config``).
+
+        Parameters
+        ----------
+        patch : dict
+            A ``set_config`` patch (nested overrides).
+
+        Returns
+        -------
+        None
+        """
+        self._on_set_config(patch or {})
+        self.sync_config_to_brain()
+
+    def set_mode(self, partial):
+        """Apply a partial mode update from REST, then resync brain (``POST /mode``).
+
+        Parameters
+        ----------
+        partial : dict
+            Mode flags to override (unspecified flags keep their value).
+
+        Returns
+        -------
+        None
+        """
+        self.apply_modes(self._merged_modes(partial or {}))
+        self.sync_config_to_brain()
 
     # ------------------------------------------------------------------ #
     # task lifecycle
@@ -433,9 +493,11 @@ class Robot:
     # inbound message handling
     # ------------------------------------------------------------------ #
     def on_message(self, _client, text):
-        """Parse one inbound JSON frame and dispatch it by its ``op`` field.
+        """Parse one inbound WebSocket frame and dispatch it by its ``op`` field.
 
-        Invalid JSON and unknown ops are ignored.
+        Only real-time ``publish`` ops are handled here; config and mode are
+        set out-of-band via the REST API (see http_server.py).  Invalid JSON
+        and unknown ops are ignored.
 
         Parameters
         ----------
@@ -455,12 +517,6 @@ class Robot:
         op = data.get("op")
         if op == "publish":
             self._on_publish(data.get("topic"), data.get("msg") or {})
-        elif op == "set_mode":
-            self.apply_modes(self._merged_modes(data.get("modes") or {}))
-        elif op == "set_config":
-            self._on_set_config(data.get("config") or {})
-        elif op == "get_config":
-            self.ws.broadcast(json.dumps({"op": "set_config", "config": self.cfg.data}))
         elif op in ("subscribe", "advertise", "unsubscribe"):
             pass
 
