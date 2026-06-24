@@ -64,8 +64,27 @@ I2C(PCA9685): SCL=22, SDA=21（無印ESP32の定番）
 
 ---
 
+## LD06 ライダ（UART 直結 → /scan）
+各テンプレートには、DC/I2C と衝突しない空きピンを使った `lidar` ブロックを入れてあります。
+**ライダの TX を下表の RX(GPIO) に接続**してください（LD06 は片方向送信なので MCU の TX は未使用。
+`tx` は MicroPython の既定 TX ピン割り当てを固定するための空きピンです）。
+
+| ボード | uart | RX (GPIO) | tx(予約) | 備考 |
+|---|---|---|---|---|
+| ESP32(無印) DevKit | 2 | 13 | 15 | フラッシュ(6–11)・PSRAM(16/17, WROVER) を回避 |
+| ESP32-S3-DevKitC-1 | 1 | 18 | 21 | ネイティブUSB(19/20) を回避 |
+| XIAO ESP32-S3 | 1 | 44 (D7) | 7 (D8) | 残りの空きパッド。D6/D7 はUSB-CDC時に空き |
+
+- LD06 の電源は **5V / GND**（信号 TX は 3.3V ロジックでそのまま MCU RX へ）。
+- 有効化は **smabo-web の Config → Modes（または Lidar）で `lidar` を ON**、
+  もしくは `config.json` に `"modes": {"lidar": true}` を追記。UART ピン変更は再起動なしで反映されます。
+- `baud`(230400)・`frame_id`("laser")・`bins`(360)・`range_min/max` は `config.py` の DEFAULTS から継承。
+
+---
+
 ## 注意
 - ピン並びは各ボードの**公式レイアウト前提**です。互換クローンは印字が違う場合があるので、
   必ず基板のシルク印刷の並び順と照合してください。
 - DCを使うには `"modes": {"dc_drive": true}` を追記して有効化。
 - TB6612FNG は別途 VM(モータ電源)/GND(コモン)/AO1,AO2(左)/BO1,BO2(右) の結線が必要。
+- LD06 の RX ピンも上記同様、必ず実機のピン配置と空き状況を確認してください。

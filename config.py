@@ -70,10 +70,17 @@ DEFAULTS = {
         "password": "your-password",
         "hostname": "esp32-robot",
     },
-    # smabo-brain relay server to connect to
+    # smabo-brain relay server / smabo-brain-ros rosbridge to connect to
     "brain": {
         "host": "192.168.1.100",
         "port": 9090,
+        # rosbridge=True targets smabo-brain-ros (rosbridge_suite): it serves at
+        # path "/" and requires advertise/subscribe before pub/sub. False targets
+        # the legacy smabo-brain relay (path "/esp32", bare publish). Port 9090
+        # is the same for both.
+        "rosbridge": False,
+        # WebSocket path. "" auto-selects: "/" for rosbridge, "/esp32" for relay.
+        "path": "",
     },
     "i2c": {"sda": 21, "scl": 22, "freq": 400000},  # classic ESP32 default
     "pca9685": {"address": 0x40, "freq": 50},
@@ -84,6 +91,7 @@ DEFAULTS = {
         "servos": True,
         "dc_drive": False,
         "encoder_drive": False,
+        "lidar": False,        # LD06 → /scan (Nav2 sensor source)
     },
 
     # -----------------------------------------------------------------------
@@ -158,6 +166,23 @@ DEFAULTS = {
             "twist_vv":  0.001,   # linear velocity variance ((m/s)^2)
             "twist_ww":  0.001,   # angular velocity variance ((rad/s)^2)
         },
+    },
+
+    # -----------------------------------------------------------------------
+    # LD06 lidar (modes.lidar): wired directly to the MCU over UART
+    # (lidar TX → MCU RX). Parsed into sensor_msgs/LaserScan and published as
+    # /scan for smabo-brain-ros / Nav2. Changing the UART pin hot-reloads the
+    # subsystem (no reboot). Default rx pin targets ESP32-S3; override per board.
+    # -----------------------------------------------------------------------
+    "lidar": {
+        "uart": 1,
+        "rx": 20,
+        "tx": -1,                  # unused; the LD06 only transmits
+        "baud": 230400,
+        "frame_id": "laser",       # matches smabo_description's lidar frame
+        "bins": 360,               # /scan ranges length (1 bin ≈ 1°)
+        "range_min": 0.05,
+        "range_max": 12.0,
     },
 }
 

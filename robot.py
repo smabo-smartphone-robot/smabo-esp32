@@ -42,6 +42,23 @@ from servo_controller import JointGroup
 from random_motion import RandomMotion
 from dc_motors import DiffDrive
 from wheel_publisher import WheelPublisher
+from lidar_ld06 import Ld06
+
+# Topics advertised / subscribed when talking to smabo-brain-ros (rosbridge),
+# which—unlike the legacy relay—requires explicit advertise before publish and
+# subscribe to receive. Outbound carry the /esp32 source prefix (stripped by the
+# relay); inbound are canonical names.
+_ROSBRIDGE_ADVERTISE = (
+    ("/esp32/wheel_vel",    "smabo_interfaces/msg/WheelVel"),
+    ("/esp32/joint_states", "sensor_msgs/msg/JointState"),
+    ("/esp32/scan",         "sensor_msgs/msg/LaserScan"),
+    ("/esp32/pong",         "std_msgs/msg/String"),   # WS ping echo (see _on_publish)
+)
+_ROSBRIDGE_SUBSCRIBE = (
+    ("/cmd_vel",        "geometry_msgs/msg/Twist"),
+    ("/servo/command",  "trajectory_msgs/msg/JointTrajectory"),
+    ("/ping",           "std_msgs/msg/String"),       # WS ping request
+)
 
 
 def _reboot_reasons(config_dict):
@@ -96,6 +113,7 @@ class Robot:
         self.drive         = None   # DiffDrive
         self.encoders      = None
         self.wheel_pub     = None
+        self.lidar         = None   # Ld06 → /scan
 
         self._tasks = {}
 
@@ -150,7 +168,30 @@ class Robot:
         -------
         None
         """
+        # rosbridge (smabo-brain-ros): odometry params come from the ROS launch,
+        # not from the ESP32, and ``set_config`` is not a rosbridge op — skip it.
+        if self.cfg.get("brain.rosbridge"):
+            return
         self.ws.broadcast(json.dumps({"op": "set_config", "config": self.cfg.data}))
+
+    def on_brain_connect(self):
+        """Run once on every (re)connect to the brain/rosbridge endpoint.
+
+        Legacy relay: push the config snapshot for odometry sync. rosbridge:
+        advertise outbound topics and subscribe to inbound ones (required before
+        publish/receive). Called from the WSClient ``on_connect`` hook.
+
+        Returns
+        -------
+        None
+        """
+        if self.cfg.get("brain.rosbridge"):
+            for topic, typ in _ROSBRIDGE_ADVERTISE:
+                self.ws.broadcast(json.dumps({"op": "advertise", "topic": topic, "type": typ}))
+            for topic, typ in _ROSBRIDGE_SUBSCRIBE:
+                self.ws.broadcast(json.dumps({"op": "subscribe", "topic": topic, "type": typ}))
+        else:
+            self.sync_config_to_brain()
 
     # ------------------------------------------------------------------ #
     # config / mode REST API (called by http_server.ConfigHTTPServer)
@@ -357,6 +398,31 @@ class Robot:
             self.drive.stop()
 
     # ------------------------------------------------------------------ #
+    # lidar subsystem (LD06 → /scan)
+    # ------------------------------------------------------------------ #
+    def _teardown_lidar(self):
+        """Cancel the scan task and release the LD06 UART."""
+        self._kill("scan")
+        if self.lidar is not None:
+            self.lidar.deinit()
+        self.lidar = None
+
+    def enable_lidar(self, on):
+        """Start or tear down the LD06 /scan publisher.
+
+        Parameters
+        ----------
+        on : bool
+            True to open the UART and publish ``/scan``, False to tear down.
+        """
+        if on:
+            if self.lidar is None:
+                self.lidar = Ld06(self.cfg)
+            self._spawn("scan", self.lidar.run(self.publish))
+        else:
+            self._teardown_lidar()
+
+    # ------------------------------------------------------------------ #
     # mode management
     # ------------------------------------------------------------------ #
     def apply_modes(self, modes):
@@ -379,6 +445,7 @@ class Robot:
             modes["dc_drive"] = False
 
         self.enable_servos(modes.get("servos", False))
+        self.enable_lidar(modes.get("lidar", False))
 
         if modes.get("encoder_drive"):
             self.disable_drive()
@@ -433,6 +500,11 @@ class Robot:
                 if modes.get("encoder_drive"):
                     self._teardown_drive()
                     self.enable_drive(with_encoder=True)
+
+            elif key == "lidar":
+                if modes.get("lidar"):
+                    self._teardown_lidar()
+                    self.enable_lidar(True)
 
     # ------------------------------------------------------------------ #
     # /joint_states publisher (required by MoveIt2)
@@ -567,7 +639,7 @@ class Robot:
         Parameters
         ----------
         topic : str
-            The published topic (``/cmd_vel`` or ``/servo/command``).
+            The published topic (``/cmd_vel``, ``/servo/command`` or ``/ping``).
         msg : dict
             The ROS message payload for that topic.
 
@@ -586,3 +658,11 @@ class Robot:
             points = msg.get("points") or []
             if names and points and self.servo_group is not None:
                 self.servo_group.load_trajectory(names, points)
+
+        elif topic == "/ping":
+            # Application-level echo so smabo-web can measure end-to-end WS
+            # reachability (web → brain → ESP32 → brain → web). Mirror the
+            # payload back on /pong unchanged; publish() adds the /esp32 prefix.
+            # std_msgs/String shape: {"data": "<token>"} (an opaque token the
+            # web side matches to compute the round-trip time).
+            self.publish("/pong", {"data": (msg or {}).get("data", "")})
