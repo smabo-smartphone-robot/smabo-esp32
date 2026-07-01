@@ -1,9 +1,10 @@
 {
     "wifi": {
         "ssid": "YOUR-SSID",
-        "password": "YOUR-PASSWORD"
+        "password": "YOUR-PASSWORD",
+        "hostname": "smabo-esp32"
     },
-    "brain": { "host": "HOST-IP", "port": 9090 },
+    "brain": { "host": "smabo-brain.local", "port": 9090 },
     "i2c": { "scl": 9, "sda": 8, "freq": 400000 },
     "dc": {
         "pins": {

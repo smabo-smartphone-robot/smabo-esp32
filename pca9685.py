@@ -153,7 +153,7 @@ class PCA9685:
         self.set_pwm(channel, 0, ticks)
 
     def off(self, channel):
-        """Drive a channel fully low (0 % duty).
+        """Cut PWM output completely (FULL_OFF bit) so the servo goes free.
 
         Parameters
         ----------
@@ -164,4 +164,4 @@ class PCA9685:
         -------
         None
         """
-        self.set_pwm(channel, 0, 0)
+        self.set_pwm(channel, 0, 0x1000)  # bit 12 = LED_FULL_OFF

@@ -302,6 +302,7 @@ class Robot:
         None
         """
         self._kill("servo_follower")
+        self._kill("servo_persist")
         self._kill("joint_states")
         self._kill_prefix("random_")   # one task per group: random_<name>
         self.servo_group   = None
@@ -330,6 +331,7 @@ class Robot:
                 self.servo_group   = JointGroup(self.pca, self.cfg.get("servos.joints"))
                 self.random_motion = RandomMotion(self.servo_group, self.cfg)
             self._spawn("servo_follower", self.servo_group.run())
+            self._spawn("servo_persist",  self._persist_angles_task())
             # one independent task per random group
             for g in (self.cfg.get("servos.random_groups") or []):
                 gname = g.get("name", "")
@@ -507,6 +509,42 @@ class Robot:
                     self.enable_lidar(True)
 
     # ------------------------------------------------------------------ #
+    # angle persistence (survive power cycle)
+    # ------------------------------------------------------------------ #
+    async def _persist_angles_task(self, interval=2.0):
+        """Periodically snapshot current joint angles into the config as
+        ``last_angle`` so they survive a power cycle.
+
+        Writes only when at least one angle has changed by more than 0.5°
+        since the previous snapshot to minimise flash wear.
+
+        Parameters
+        ----------
+        interval : float, optional
+            Seconds between snapshots (default 2).
+
+        Returns
+        -------
+        None
+            Never returns (cancelled when the servo subsystem restarts).
+        """
+        last_saved = {}
+        while True:
+            await asyncio.sleep(interval)
+            if self.servo_group is None:
+                continue
+            patch = {}
+            for name, angle in self.servo_group._current.items():
+                spec = self.servo_group.joints.get(name) or {}
+                if not spec.get("enabled", True):
+                    continue
+                if abs(last_saved.get(name, angle + 1.0) - angle) > 0.5:
+                    patch[name] = {"last_angle": angle}
+                    last_saved[name] = angle
+            if patch:
+                self.cfg.update({"servos": {"joints": patch}})
+
+    # ------------------------------------------------------------------ #
     # /joint_states publisher (required by MoveIt2)
     # ------------------------------------------------------------------ #
     async def _joint_states_task(self):
@@ -624,11 +662,18 @@ class Robot:
         -------
         None
         """
+        # When a servo is being disabled, inject its current angle as last_angle
+        # so it is persisted to flash and restored on the next enable.
+        if "servos" in config_dict and self.servo_group is not None:
+            joints_patch = (config_dict.get("servos") or {}).get("joints") or {}
+            if isinstance(joints_patch, dict):
+                self.servo_group.inject_current_for_disable(joints_patch)
+
         reasons = _reboot_reasons(config_dict)
 
         self.cfg.update(config_dict)
+        self.cfg.save_now()  # flush immediately; debounce only applies to angle persist
         if reasons:
-            self.cfg.save_now()
             asyncio.create_task(self._reboot_after(500, reasons))
         else:
             self._reload_subsystems(list(config_dict.keys()))
@@ -658,6 +703,12 @@ class Robot:
             points = msg.get("points") or []
             if names and points and self.servo_group is not None:
                 self.servo_group.load_trajectory(names, points)
+                # Persist the final commanded angle immediately so a power cut
+                # within the persist-task window still restores correctly.
+                patch = {n: {"last_angle": a}
+                         for n, a in self.servo_group.final_angles(names, points).items()}
+                if patch:
+                    self.cfg.update({"servos": {"joints": patch}})
 
         elif topic == "/ping":
             # Application-level echo so smabo-web can measure end-to-end WS

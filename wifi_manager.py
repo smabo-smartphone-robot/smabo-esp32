@@ -27,6 +27,12 @@ async def connect(cfg):
     password = cfg.get("wifi.password")
     hostname = cfg.get("wifi.hostname", "esp32-robot")
 
+    # mDNS ホスト名を設定（network.hostname は active() より前に呼ぶ必要がある）
+    try:
+        network.hostname(hostname)
+    except Exception:
+        pass
+
     sta = network.WLAN(network.STA_IF)
     sta.active(True)
     try:

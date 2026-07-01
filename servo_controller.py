@@ -82,7 +82,12 @@ class JointGroup:
             init = spec.get("init_angle", 0)
             self._target[name]  = init
             self._current[name] = init
-            self._apply(name, init)
+            if spec.get("enabled", True):
+                restore = float(spec.get("last_angle", init))
+                self._target[name] = restore
+                self._apply(name, restore)
+            else:
+                self.pca.off(spec["channel"])
 
     # -- low level ---------------------------------------------------------
     def _apply(self, name, angle_deg):
@@ -103,20 +108,24 @@ class JointGroup:
         """
         spec  = self.joints[name]
         angle = _clamp(angle_deg, spec["min_angle"], spec["max_angle"])
+        # invert: mirror around the midpoint so left/right hand behave symmetrically
+        hw    = spec["min_angle"] + spec["max_angle"] - angle if spec.get("invert", False) else angle
         span  = spec["max_angle"] - spec["min_angle"]
-        ratio = (angle - spec["min_angle"]) / span if span else 0.0
+        ratio = (hw - spec["min_angle"]) / span if span else 0.0
         us    = spec["min_us"] + ratio * (spec["max_us"] - spec["min_us"])
         self.pca.set_us(spec["channel"], us)
-        self._current[name] = angle
+        self._current[name] = angle  # store logical angle (pre-inversion)
 
     # -- single-point API (manual control / random motion) ----------------
     def set_angle_deg(self, name, angle, speed=None):
         """Set a joint's target angle in degrees.
 
-        Unknown joint names are ignored. The follower ramps toward the target
-        at ``speed`` (deg/s) when given — a transient override used by random
-        motion — otherwise at the joint's configured ``max_speed``. A move with
-        an effective speed of 0 is applied immediately. Passing ``speed=None``
+        Unknown joint names are ignored. Disabled joints (``enabled=False``) are
+        also ignored so that random motion and vision policies cannot override the
+        free state set by ``pca.off()`` in ``__init__``. The follower ramps toward
+        the target at ``speed`` (deg/s) when given — a transient override used by
+        random motion — otherwise at the joint's configured ``max_speed``. A move
+        with an effective speed of 0 is applied immediately. Passing ``speed=None``
         also clears any previous override (so manual moves use the config).
 
         Parameters
@@ -133,6 +142,8 @@ class JointGroup:
         None
         """
         if name not in self.joints:
+            return
+        if not self.joints[name].get("enabled", True):
             return
         self._target[name] = _clamp(
             angle, self.joints[name]["min_angle"], self.joints[name]["max_angle"]
@@ -184,6 +195,61 @@ class JointGroup:
         self._traj_queue = queue
         self._traj_idx   = 0
 
+    # -- trajectory utilities (used by Robot for angle persistence) -------
+    def final_angles(self, joint_names, points):
+        """Return clamped angles (deg) for the last trajectory point.
+
+        Used by the orchestrator to persist commanded angles immediately on
+        receipt, before the follower task has had a chance to apply them.
+
+        Parameters
+        ----------
+        joint_names : list of str
+            Joint names corresponding positionally to each point's positions.
+        points : list of dict
+            JointTrajectory points (only the last one is used).
+
+        Returns
+        -------
+        dict
+            ``{name: clamped_deg}`` for enabled joints present in this group.
+        """
+        if not points:
+            return {}
+        positions = (points[-1].get("positions")) or []
+        out = {}
+        for name, pos_rad in zip(joint_names, positions):
+            spec = self.joints.get(name)
+            if spec and spec.get("enabled", True):
+                out[name] = _clamp(
+                    pos_rad * 180.0 / math.pi,
+                    spec["min_angle"],
+                    spec["max_angle"],
+                )
+        return out
+
+    def inject_current_for_disable(self, joints_patch):
+        """Write each joint's current angle into a patch that disables it.
+
+        When a joint is disabled its last commanded angle must be persisted so
+        it can be restored on re-enable.  Mutates ``joints_patch`` in place.
+
+        Parameters
+        ----------
+        joints_patch : dict
+            Mapping of joint name to spec-override dict (from a set_config
+            payload's ``servos.joints`` subtree).
+
+        Returns
+        -------
+        None
+        """
+        for name, jspec in joints_patch.items():
+            if isinstance(jspec, dict) and jspec.get("enabled") is False:
+                current = self._current.get(name)
+                if current is not None:
+                    jspec["last_angle"] = current
+
     # -- state query -------------------------------------------------------
     def get_state(self):
         """Return the current commanded angle of every joint, in radians.
@@ -221,10 +287,11 @@ class JointGroup:
                 if _ticks_diff(now, deadline_ms) >= 0:
                     for name, deg in targets.items():
                         spec = self.joints.get(name)
-                        if spec:
-                            self._target[name] = _clamp(
-                                deg, spec["min_angle"], spec["max_angle"]
-                            )
+                        if spec and spec.get("enabled", True):
+                            clamped = _clamp(deg, spec["min_angle"], spec["max_angle"])
+                            self._target[name] = clamped
+                            if spec.get("max_speed", 0) <= 0:
+                                self._apply(name, clamped)
                     self._traj_idx += 1
                 else:
                     break   # remaining points are still in the future
@@ -232,6 +299,8 @@ class JointGroup:
             # Speed-limited follower: move _current toward _target. A transient
             # override (set by random motion) takes precedence over max_speed.
             for name, spec in self.joints.items():
+                if not spec.get("enabled", True):
+                    continue
                 speed = self._speed_override.get(name, spec.get("max_speed", 0))
                 if speed <= 0:
                     continue

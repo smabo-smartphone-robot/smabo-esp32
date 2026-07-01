@@ -31,7 +31,7 @@ _DEBOUNCE_MS = 2000  # delay before a changed config is flushed to flash
 # ---------------------------------------------------------------------------
 
 
-def _servo(channel, lo, hi, init=0, max_speed=120):
+def _servo(channel, lo, hi, init=0, max_speed=120, enabled=True, invert=False):
     """Build a servo spec dict with the standard 500-2500 µs pulse range.
 
     Parameters
@@ -46,12 +46,19 @@ def _servo(channel, lo, hi, init=0, max_speed=120):
         Angle commanded at boot (default 0).
     max_speed : float, optional
         Angular speed limit in deg/s; 0 means jump instantly (default 120).
+    enabled : bool, optional
+        Whether the servo holds its position (True) or is free (False).
+    invert : bool, optional
+        Mirror the angle around the midpoint before writing PWM (default False).
+        Use to make left/right hand servos behave symmetrically when wired in
+        opposite orientations.
 
     Returns
     -------
     dict
         A servo spec with keys ``channel``, ``min_angle``, ``max_angle``,
-        ``min_us``, ``max_us``, ``init_angle`` and ``max_speed``.
+        ``min_us``, ``max_us``, ``init_angle``, ``max_speed``, ``enabled``,
+        ``invert``.
     """
     return {
         "channel": channel,
@@ -61,6 +68,8 @@ def _servo(channel, lo, hi, init=0, max_speed=120):
         "max_us": 2500,
         "init_angle": init,
         "max_speed": max_speed,  # deg/s, 0 = jump instantly
+        "enabled": enabled,
+        "invert": invert,
     }
 
 
@@ -106,8 +115,8 @@ DEFAULTS = {
         "behavior": "manual",   # "manual" | "random"
         "joints": {
             # ch 0-1: hand (2 servos)
-            "left_hand":   _servo(0,   0, 90, 0,   0),
-            "right_hand":  _servo(1,   0, 90, 0,   0),
+            "left_hand":   _servo(0, -90, 90, 0,   0),
+            "right_hand":  _servo(1, -90, 90, 0,   0),
             # ch 2: neck pan only (tilt removed)
             "head_pan":    _servo(2, -90, 90, 0, 120),
             # ch 3-6: arm joints — add/remove to match the number of axes on your robot
@@ -116,11 +125,7 @@ DEFAULTS = {
             "arm_joint_3": _servo(5, -90, 90, 0,  90),
             "arm_joint_4": _servo(6, -90, 90, 0,  90),
         },
-        "random_groups": [
-            # joints listed together fire simultaneously (angles are random per joint)
-            {"name": "hands", "joints": ["left_hand", "right_hand"], "interval": [2.0, 5.0]},
-            {"name": "neck",  "joints": ["head_pan"], "interval": [1.0, 3.0]},
-        ],
+        "random_groups": [],
         # Rate at which /joint_states is published (required by MoveIt2).
         # Set to 0 to disable.
         "joint_states_rate": 20.0,
