@@ -153,16 +153,31 @@ class DiffDrive:
         max_ang = self.cfg.get("dc.max_angular", 1.5)
         sep = self.cfg.get("dc.wheel_separation", 0.15)
 
-        # differential kinematics, normalised to drive units
-        v_l = linear_x - angular_z * sep / 2.0
-        v_r = linear_x + angular_z * sep / 2.0
-        # normalise by the worst-case full-speed magnitude
-        norm = max_lin + max_ang * sep / 2.0
-        if norm <= 0:
-            norm = 1.0
         self._last_cmd_ms = _ticks_ms()
-        self.left.drive(_clamp(v_l / norm, -1.0, 1.0))
-        self.right.drive(_clamp(v_r / norm, -1.0, 1.0))
+
+        if abs(linear_x) < 0.001:
+            # Pure spin: opposite directions at full angular duty.
+            # Standard kinematics would yield only ~20 % duty here, which is
+            # often too weak to overcome static friction.
+            duty = _clamp(abs(angular_z) / (max_ang if max_ang > 0 else 1.0), 0.0, 1.0)
+            if angular_z > 0:      # CCW: left backward, right forward
+                self.left.drive(-duty)
+                self.right.drive(duty)
+            elif angular_z < 0:    # CW: left forward, right backward
+                self.left.drive(duty)
+                self.right.drive(-duty)
+            else:
+                self.left.stop()
+                self.right.stop()
+        else:
+            # Differential kinematics, normalised to drive units.
+            v_l = linear_x - angular_z * sep / 2.0
+            v_r = linear_x + angular_z * sep / 2.0
+            norm = max_lin + max_ang * sep / 2.0
+            if norm <= 0:
+                norm = 1.0
+            self.left.drive(_clamp(v_l / norm, -1.0, 1.0))
+            self.right.drive(_clamp(v_r / norm, -1.0, 1.0))
 
     def stop(self):
         """Coast both wheels.
