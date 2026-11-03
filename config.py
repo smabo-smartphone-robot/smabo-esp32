@@ -149,7 +149,7 @@ DEFAULTS = {
         "max_linear": 0.30,        # m/s mapped to full duty
         "max_angular": 1.50,       # rad/s mapped to full duty
         "wheel_radius": 0.030,     # m
-        "wheel_separation": 0.150,  # m (track width)
+        "wheel_separation": 0.130,  # m (track width, centre to centre of the tyres)
         "invert_left": False,
         "invert_right": False,
         "cmd_timeout": 0.5,        # s; stop motors if no cmd_vel within this

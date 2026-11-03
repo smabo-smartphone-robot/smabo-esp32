@@ -151,7 +151,7 @@ class DiffDrive:
         """
         max_lin = self.cfg.get("dc.max_linear", 0.3)
         max_ang = self.cfg.get("dc.max_angular", 1.5)
-        sep = self.cfg.get("dc.wheel_separation", 0.15)
+        sep = self.cfg.get("dc.wheel_separation", 0.13)
 
         self._last_cmd_ms = _ticks_ms()
 
