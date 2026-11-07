@@ -11,6 +11,9 @@ handshake, so nothing here depends on which one is running:
                  /scan          sensor_msgs/LaserScan
                  /pong          std_msgs/String (echo of /ping)
                  /config        std_msgs/String, config JSON minus wifi
+                 /config_url    std_msgs/String, our REST base URL ("http://ip:port"),
+                                on connect and every 5 s, so smabo-web finds the
+                                config API without being told the ESP32's address
                {"op":"notice","message":"..."}
   inbound      {"op":"publish","topic":"/cmd_vel" | "/servo/command" | "/ping", ...}
 
@@ -31,6 +34,7 @@ ADVERTISE = (
     ("/esp32/joint_states", "sensor_msgs/msg/JointState"),
     ("/esp32/scan",         "sensor_msgs/msg/LaserScan"),
     ("/esp32/pong",         "std_msgs/msg/String"),
+    ("/esp32/config_url",   "std_msgs/msg/String"),
 )
 SUBSCRIBE = (
     ("/cmd_vel",        "geometry_msgs/msg/Twist"),
@@ -71,13 +75,20 @@ class BrainLink:
         snapshot = {k: v for k, v in config.items() if k != "wifi"}
         self.publish("/config", {"data": json.dumps(snapshot)})
 
-    def handshake(self, config):
-        """Run on every (re)connect: advertise, subscribe, then send the config."""
+    def send_config_url(self, url):
+        """Tell smabo-web where our REST config API is (``http://ip:port``)."""
+        if url:
+            self.publish("/config_url", {"data": url})
+
+    def handshake(self, config, config_url=None):
+        """Run on every (re)connect: advertise, subscribe, then send the config
+        and the REST URL."""
         for topic, typ in ADVERTISE:
             self._send({"op": "advertise", "topic": topic, "type": typ})
         for topic, typ in SUBSCRIBE:
             self._send({"op": "subscribe", "topic": topic, "type": typ})
         self.send_config(config)
+        self.send_config_url(config_url)
 
     @staticmethod
     def parse(text):

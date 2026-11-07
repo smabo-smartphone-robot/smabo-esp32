@@ -98,7 +98,25 @@ class Robot:
 
     def on_brain_connect(self):
         """WSClient ``on_connect`` hook: advertise, subscribe, send config."""
-        self.link.handshake(self.cfg.data)
+        self.link.handshake(self.cfg.data, self.config_url())
+
+    def config_url(self):
+        """Our REST base URL (``http://<STA ip>:<http.port>``), or None offline."""
+        try:
+            import network
+            ip = network.WLAN(network.STA_IF).ifconfig()[0]
+        except Exception:
+            return None
+        if not ip or ip == "0.0.0.0":
+            return None
+        port = self.cfg.get("http.port", 80)
+        return "http://%s" % ip if port == 80 else "http://%s:%d" % (ip, port)
+
+    async def announce_config_url_task(self, interval=5.0):
+        """Repeat /config_url so a smabo-web that connects later still gets it."""
+        while True:
+            await asyncio.sleep(interval)
+            self.link.send_config_url(self.config_url())
 
     # ------------------------------------------------------------------ #
     # config / mode REST API (called by http_server.ConfigHTTPServer)

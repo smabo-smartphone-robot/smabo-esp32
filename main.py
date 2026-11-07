@@ -68,6 +68,7 @@ async def amain():
     asyncio.create_task(ws.run())
     asyncio.create_task(ConfigHTTPServer(robot, cfg.get("http.port", 80)).run())
     robot.start()
+    asyncio.create_task(robot.announce_config_url_task())
 
     asyncio.create_task(cfg.autosave_task())
     asyncio.create_task(wifi_manager.keepalive_task(cfg, sta))
