@@ -1,0 +1,91 @@
+"""Messages between the ESP32 and the brain (smabo-brain or smabo-brain-ros).
+
+Both brains serve ``ws://<brain>:9090/`` and take the same rosbridge v2.0 JSON
+handshake, so nothing here depends on which one is running:
+
+  on connect   advertise the topics below that we publish, subscribe the ones
+               we read, then send the config snapshot.
+  outbound     {"op":"publish","topic":"/esp32<topic>","msg":{...}}
+                 /wheel_vel     {left, right (m/s), dt (s)}  → brain integrates /odom
+                 /joint_states  sensor_msgs/JointState
+                 /scan          sensor_msgs/LaserScan
+                 /pong          std_msgs/String (echo of /ping)
+                 /config        std_msgs/String, config JSON minus wifi
+               {"op":"notice","message":"..."}
+  inbound      {"op":"publish","topic":"/cmd_vel" | "/servo/command" | "/ping", ...}
+
+The ``/esp32`` source prefix lets the brain tell who sent a message; it strips
+it and delivers the canonical name. These tables mirror smabo-brain's
+brain/topics.py, whose tests check that they match.
+
+Config and mode themselves are set over REST (http_server.py), not here.
+"""
+
+import json
+
+SOURCE_PREFIX = "/esp32"
+
+ADVERTISE = (
+    ("/esp32/config",       "std_msgs/msg/String"),
+    ("/esp32/wheel_vel",    "smabo_interfaces/msg/WheelVel"),
+    ("/esp32/joint_states", "sensor_msgs/msg/JointState"),
+    ("/esp32/scan",         "sensor_msgs/msg/LaserScan"),
+    ("/esp32/pong",         "std_msgs/msg/String"),
+)
+SUBSCRIBE = (
+    ("/cmd_vel",        "geometry_msgs/msg/Twist"),
+    ("/servo/command",  "trajectory_msgs/msg/JointTrajectory"),
+    ("/ping",           "std_msgs/msg/String"),
+)
+
+
+class BrainLink:
+    """Formats outbound frames for, and parses inbound frames from, the brain.
+
+    Parameters
+    ----------
+    ws : ws_client.WSClient
+        The WebSocket client connected to the brain.
+    """
+
+    def __init__(self, ws):
+        self.ws = ws
+
+    def _send(self, frame):
+        self.ws.broadcast(json.dumps(frame))
+
+    def publish(self, topic, msg):
+        """Publish ``msg`` on the canonical ``topic`` (the /esp32 prefix is added)."""
+        self._send({"op": "publish", "topic": SOURCE_PREFIX + topic, "msg": msg})
+
+    def notice(self, message):
+        """Send a human-readable notice (shown in smabo-web)."""
+        self._send({"op": "notice", "message": message})
+
+    def send_config(self, config):
+        """Send the config snapshot that smabo-brain needs for odometry.
+
+        Wi-Fi credentials are left out: on smabo-brain-ros any rosbridge client
+        could subscribe to this topic.
+        """
+        snapshot = {k: v for k, v in config.items() if k != "wifi"}
+        self.publish("/config", {"data": json.dumps(snapshot)})
+
+    def handshake(self, config):
+        """Run on every (re)connect: advertise, subscribe, then send the config."""
+        for topic, typ in ADVERTISE:
+            self._send({"op": "advertise", "topic": topic, "type": typ})
+        for topic, typ in SUBSCRIBE:
+            self._send({"op": "subscribe", "topic": topic, "type": typ})
+        self.send_config(config)
+
+    @staticmethod
+    def parse(text):
+        """Inbound frame → ``(topic, msg)`` for a publish, else ``None``."""
+        try:
+            data = json.loads(text)
+        except ValueError:
+            return None
+        if data.get("op") != "publish":
+            return None
+        return data.get("topic"), data.get("msg") or {}

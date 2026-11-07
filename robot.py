@@ -1,34 +1,8 @@
-"""Orchestrator: wires subsystems together, handles the rosbridge protocol,
-and manages which modes are active.
+"""Orchestrator: wires subsystems together and manages which modes are active.
 
-WebSocket message protocol (rosbridge v2.0 compatible JSON), at ws://<brain>/
-— the same for smabo-brain and smabo-brain-ros. On connect the ESP32 sends
-``advertise`` / ``subscribe`` for the topics below. Outbound topics carry the
-``/esp32`` source prefix, which the brain strips.
-
-  inbound — robot operation (publish):
-    {"op":"publish","topic":"/cmd_vel",       "msg":{geometry_msgs/Twist}}
-    {"op":"publish","topic":"/servo/command", "msg":{trajectory_msgs/JointTrajectory}}
-
-  outbound:
-    {"op":"publish","topic":"/wheel_vel",    "msg":{left, right (m/s), dt (s)}}
-    {"op":"publish","topic":"/joint_states", "msg":{sensor_msgs/JointState}}
-    {"op":"publish","topic":"/config",       "msg":{"data": "<JSON>"}}
-                                             config snapshot (minus wifi) for
-                                             brain's odometry sync (see below)
-    {"op":"notice", "message":"..."}
-
-  Note: raw wheel velocities are published; smabo-brain integrates them
-  into nav_msgs/Odometry (so it can be fused with IMU/GPS).
-
-Config / mode are NOT handled over WebSocket — smabo-web sets them directly
-via the REST API in http_server.py (GET/POST /config, POST /mode).  After a
-change (and on each brain reconnect) the full config is pushed to smabo-brain
-over WebSocket so its odometry integrator stays in sync with the wheel
-geometry / covariance / frame names.
+Talking to the brain (topics, handshake, frame format) lives in brain_link.py;
+config / mode arrive over REST (http_server.py) and are applied here.
 """
-
-import json
 
 try:
     import uasyncio as asyncio
@@ -47,24 +21,7 @@ from random_motion import RandomMotion
 from dc_motors import DiffDrive
 from wheel_publisher import WheelPublisher
 from lidar_ld06 import Ld06
-
-# Topics advertised / subscribed on every brain connect. Both smabo-brain and
-# smabo-brain-ros (rosbridge_suite) accept this rosbridge handshake at "/", so
-# the ESP32 needs no setting for which brain it talks to. Outbound carry the
-# /esp32 source prefix (stripped by the brain); inbound are canonical names.
-_ROSBRIDGE_ADVERTISE = (
-    ("/esp32/config",       "std_msgs/msg/String"),   # config snapshot for brain odometry
-    ("/esp32/wheel_vel",    "smabo_interfaces/msg/WheelVel"),
-    ("/esp32/joint_states", "sensor_msgs/msg/JointState"),
-    ("/esp32/scan",         "sensor_msgs/msg/LaserScan"),
-    ("/esp32/pong",         "std_msgs/msg/String"),   # WS ping echo (see _on_publish)
-)
-_ROSBRIDGE_SUBSCRIBE = (
-    ("/cmd_vel",        "geometry_msgs/msg/Twist"),
-    ("/servo/command",  "trajectory_msgs/msg/JointTrajectory"),
-    ("/ping",           "std_msgs/msg/String"),       # WS ping request
-)
-
+from brain_link import BrainLink
 
 def _reboot_reasons(config_dict):
     """Find config keys in a patch that require a full hardware reboot.
@@ -107,11 +64,11 @@ class Robot:
         pca : pca9685.PCA9685
             The servo PWM controller shared by all joints.
         ws : ws_client.WSClient
-            The WebSocket client to smabo-brain, used to send outbound messages.
+            The WebSocket client to the brain, used to send outbound messages.
         """
         self.cfg = config
         self.pca = pca
-        self.ws = ws
+        self.link = BrainLink(ws)
 
         self.servo_group   = None   # JointGroup for all servos
         self.random_motion = None   # RandomMotion instance
@@ -126,75 +83,22 @@ class Robot:
     # helpers
     # ------------------------------------------------------------------ #
     def publish(self, topic, msg):
-        """Broadcast a rosbridge ``publish`` op to all clients.
-
-        Parameters
-        ----------
-        topic : str
-            ROS topic name.
-        msg : dict
-            The message payload matching the topic's type.
-
-        Returns
-        -------
-        None
-
-        Notes
-        -----
-        The source prefix ``/esp32`` is prepended so smabo-brain can identify
-        the origin and strip it before re-broadcasting under the canonical
-        topic name.
-        """
-        self.ws.broadcast(json.dumps({"op": "publish", "topic": "/esp32" + topic, "msg": msg}))
+        """Publish to the brain on the canonical ``topic`` (see brain_link.py)."""
+        self.link.publish(topic, msg)
 
     def _notice(self, message):
-        """Broadcast a ``notice`` op (informational message) to all clients.
-
-        Parameters
-        ----------
-        message : str
-            Human-readable notice text.
-
-        Returns
-        -------
-        None
-        """
-        self.ws.broadcast(json.dumps({"op": "notice", "message": message}))
+        """Send a human-readable notice to smabo-web via the brain."""
+        self.link.notice(message)
 
     def sync_config_to_brain(self):
-        """Push the full config to smabo-brain so its odometry stays in sync.
-
-        Config is otherwise set directly by smabo-web over REST (and never
-        flows through brain), but brain's odometry integrator needs the wheel
-        geometry / covariance / frame names.  Called on every brain (re)connect
-        and after each REST config/mode change.
-
-        Returns
-        -------
-        None
-        """
-        # Published as a plain topic (std_msgs/String, JSON in ``data``) so it
-        # also passes through rosbridge. Wi-Fi credentials are left out: on
-        # smabo-brain-ros any rosbridge client could subscribe to it.
-        snapshot = {k: v for k, v in self.cfg.data.items() if k != "wifi"}
-        self.publish("/config", {"data": json.dumps(snapshot)})
+        """Send the config snapshot to the brain (its odometry needs the wheel
+        geometry / covariance / frame names). Called on every brain (re)connect
+        and after each REST config/mode change."""
+        self.link.send_config(self.cfg.data)
 
     def on_brain_connect(self):
-        """Run once on every (re)connect to the brain/rosbridge endpoint.
-
-        Advertise outbound topics and subscribe to inbound ones (rosbridge
-        requires both before publish/receive), then push the config snapshot
-        for smabo-brain's odometry. Called from the WSClient ``on_connect`` hook.
-
-        Returns
-        -------
-        None
-        """
-        for topic, typ in _ROSBRIDGE_ADVERTISE:
-            self.ws.broadcast(json.dumps({"op": "advertise", "topic": topic, "type": typ}))
-        for topic, typ in _ROSBRIDGE_SUBSCRIBE:
-            self.ws.broadcast(json.dumps({"op": "subscribe", "topic": topic, "type": typ}))
-        self.sync_config_to_brain()
+        """WSClient ``on_connect`` hook: advertise, subscribe, send config."""
+        self.link.handshake(self.cfg.data)
 
     # ------------------------------------------------------------------ #
     # config / mode REST API (called by http_server.ConfigHTTPServer)
@@ -606,32 +510,11 @@ class Robot:
     # inbound message handling
     # ------------------------------------------------------------------ #
     def on_message(self, _client, text):
-        """Parse one inbound WebSocket frame and dispatch it by its ``op`` field.
-
-        Only real-time ``publish`` ops are handled here; config and mode are
-        set out-of-band via the REST API (see http_server.py).  Invalid JSON
-        and unknown ops are ignored.
-
-        Parameters
-        ----------
-        _client : asyncio.StreamWriter
-            The originating client (unused; replies are broadcast).
-        text : str
-            The raw JSON text of the inbound frame.
-
-        Returns
-        -------
-        None
-        """
-        try:
-            data = json.loads(text)
-        except ValueError:
-            return
-        op = data.get("op")
-        if op == "publish":
-            self._on_publish(data.get("topic"), data.get("msg") or {})
-        elif op in ("subscribe", "advertise", "unsubscribe"):
-            pass
+        """Handle one inbound WebSocket frame: only ``publish`` ops are used
+        (config and mode come over REST); anything else is ignored."""
+        parsed = BrainLink.parse(text)
+        if parsed is not None:
+            self._on_publish(*parsed)
 
     def _merged_modes(self, partial):
         """Overlay a partial mode update onto the current modes.

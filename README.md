@@ -79,7 +79,8 @@ mpremote connect /dev/ttyUSB0 repl
 | `wifi_manager.py` | WiFi 接続・自動再接続 |
 | `ws_client.py` | RFC 6455 WebSocket クライアント（smabo-brainへ接続・自動再接続、外部ライブラリ不要） |
 | `http_server.py` | config/mode の REST API サーバ（smabo-web が直接アクセス、CORS 対応） |
-| `robot.py` | オーケストレータ（rosbridgeプロトコル・モード管理） |
+| `robot.py` | オーケストレータ（サブシステムの起動停止・モード管理・受信指令の処理） |
+| `brain_link.py` | brain との通信（advertise / subscribe・publish・受信フレームの解釈） |
 | `pca9685.py` | PCA9685 PWM ドライバ（サーボ用 I2C） |
 | `servo_controller.py` | JointGroup（全サーボ共通） |
 | `random_motion.py` | グループ単位のランダム動作 |
@@ -102,7 +103,9 @@ mpremote connect /dev/ttyUSB0 repl
 
 ## 通信プロトコル
 
-起動時に smabo-brain（`ws://<brain-host>:<port>/esp32`、接続先は `config.json` の `brain` で指定）へクライアントとして接続し、JSON送受信します。フォーマットはrosbridgeの v2.0 互換。認証なし（信頼済みLAN内利用前提）。
+起動時に brain（`ws://<brain-host>:<port>/`、接続先は `config.json` の `brain` で指定）へクライアントとして接続し、JSON送受信します。フォーマットはrosbridgeの v2.0 互換。認証なし（信頼済みLAN内利用前提）。
+
+brain は smabo-brain でも smabo-brain-ros でも同じ手順なので、どちらを使うかの設定はありません。接続のたびに、送信トピックを **advertise**、受信トピックを **subscribe** してから config スナップショットを送ります。送信トピックには送信元 prefix `/esp32` が付き、brain が剥がします。実装は `brain_link.py` です。
 
 主なトピック:
 
@@ -115,7 +118,7 @@ mpremote connect /dev/ttyUSB0 repl
 | 送信 | `/wheel_vel` | ホイール速度（left/right m/s, dt）。オドメトリ積分は smabo-brain 側 |
 | 送信 | `/joint_states` | 関節角度 |
 | 送信 | `/scan` | LD06 ライダのスキャン（`modes.lidar` 有効時）。Nav2 のセンサ入力 |
-| 送信 | `set_config` | 全 config スナップショット。smabo-brain のオドメトリ同期用（下記参照。rosbridge モードでは送信しない） |
+| 送信 | `/config` | config スナップショット（std_msgs/String の data に JSON。Wi-Fi 設定は除く）。smabo-brain のオドメトリ同期用（下記参照） |
 
 ### 設定 REST API（smabo-web ↔ ESP32 直通）
 
@@ -129,27 +132,16 @@ smabo-web から直接アクセスします。
 | `POST` | `/mode`   | サブシステムの有効/無効（servos / dc_drive / encoder_drive / lidar） |
 
 smabo-brain のオドメトリ積分は車輪ジオメトリ・共分散・frame 名を必要とするため、
-ESP32 は brain への接続時および config/mode 変更時に、全 config を WebSocket で
-`{"op":"set_config","config":{…}}` として brain に push します（brain 内部の odom 同期専用）。
+ESP32 は brain への接続時および config/mode 変更時に、config を `/esp32/config` で
+brain に送ります（brain 内部の odom 同期専用。web へは流れません）。
 
 
-## smabo-brain-ros（rosbridge）連携
+## smabo-brain-ros（ROS 2）連携
 
 ROS 2 スタック（[smabo-brain-ros](https://github.com/smabo-smartphone-robot/smabo-brain-ros)：
-rosbridge_suite + Nav2 + MoveIt2）に接続する場合は `config.json` で次を設定します。
-
-```json
-{ "brain": { "host": "<ros-host>", "port": 9090, "rosbridge": true } }
-```
-
-- 接続先パスは rosbridge の `"/"`（レガシー smabo-brain は `"/esp32"`）。`brain.path` で上書き可。
-- rosbridge は publish 前の **advertise** と受信のための **subscribe** を要求するため、
-  ESP32 は接続時に送信トピック（`/esp32/wheel_vel`・`/esp32/joint_states`・`/esp32/scan`・`/esp32/pong`）を
-  advertise し、受信トピック（`/cmd_vel`・`/servo/command`・`/ping`）を subscribe します。
-- rosbridge モードでは `set_config` を送りません（オドメトリのパラメータは ROS 側の launch で
-  与えるため）。送信元 prefix `/esp32` は ROS 側の relay が剥がします。
-
-`rosbridge:false`（既定）ならレガシー smabo-brain への従来動作のままです。
+rosbridge_suite + Nav2 + MoveIt2）につなぐ場合も、`brain.host` をそのマシンにするだけで、
+ほかの設定は要りません。送信元 prefix `/esp32` は ROS 側の relay が剥がします。
+古い `config.json` に残っている `brain.rosbridge` は無視されます。
 
 ### LD06 ライダ（`modes.lidar`）
 
