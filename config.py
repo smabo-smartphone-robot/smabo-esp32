@@ -83,12 +83,9 @@ DEFAULTS = {
     "brain": {
         "host": "192.168.1.100",
         "port": 9090,
-        # rosbridge=True targets smabo-brain-ros (rosbridge_suite): it serves at
-        # path "/" and requires advertise/subscribe before pub/sub. False targets
-        # the legacy smabo-brain relay (path "/esp32", bare publish). Port 9090
-        # is the same for both.
-        "rosbridge": False,
-        # WebSocket path. "" auto-selects: "/" for rosbridge, "/esp32" for relay.
+        # WebSocket path. "" = "/", where both smabo-brain and smabo-brain-ros
+        # accept the rosbridge handshake, so nothing here depends on which
+        # brain is running. (An old "rosbridge" key in config.json is ignored.)
         "path": "",
     },
     "i2c": {"sda": 21, "scl": 22, "freq": 400000},  # classic ESP32 default
@@ -150,6 +147,7 @@ DEFAULTS = {
         "max_angular": 1.50,       # rad/s mapped to full duty
         "wheel_radius": 0.030,     # m
         "wheel_separation": 0.130,  # m (track width, centre to centre of the tyres)
+        "min_duty": 0.0,           # static-friction floor for any non-zero wheel duty (0 = off)
         "invert_left": False,
         "invert_right": False,
         "cmd_timeout": 0.5,        # s; stop motors if no cmd_vel within this

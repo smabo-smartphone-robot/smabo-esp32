@@ -48,12 +48,13 @@ async def amain():
         return robot_ref["robot"].on_message(client, text)
 
     def on_connect():
-        # Legacy relay: push config for odometry sync. rosbridge: advertise
-        # outbound + subscribe inbound topics. (config is set over REST.)
+        # advertise outbound + subscribe inbound topics, then push config for
+        # brain odometry. (config itself is set over REST.)
         return robot_ref["robot"].on_brain_connect()
 
-    # rosbridge serves at "/", the legacy relay at "/esp32"; brain.path overrides.
-    ws_path = cfg.get("brain.path") or ("/" if cfg.get("brain.rosbridge") else "/esp32")
+    # smabo-brain and smabo-brain-ros both serve the rosbridge handshake at "/";
+    # brain.path overrides.
+    ws_path = cfg.get("brain.path") or "/"
     ws = WSClient(
         host=cfg.get("brain.host", "192.168.1.100"),
         port=cfg.get("brain.port", 9090),

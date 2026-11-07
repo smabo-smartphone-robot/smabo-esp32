@@ -1,7 +1,10 @@
 """Orchestrator: wires subsystems together, handles the rosbridge protocol,
 and manages which modes are active.
 
-WebSocket message protocol (rosbridge v2.0 compatible JSON), via smabo-brain:
+WebSocket message protocol (rosbridge v2.0 compatible JSON), at ws://<brain>/
+— the same for smabo-brain and smabo-brain-ros. On connect the ESP32 sends
+``advertise`` / ``subscribe`` for the topics below. Outbound topics carry the
+``/esp32`` source prefix, which the brain strips.
 
   inbound — robot operation (publish):
     {"op":"publish","topic":"/cmd_vel",       "msg":{geometry_msgs/Twist}}
@@ -10,8 +13,9 @@ WebSocket message protocol (rosbridge v2.0 compatible JSON), via smabo-brain:
   outbound:
     {"op":"publish","topic":"/wheel_vel",    "msg":{left, right (m/s), dt (s)}}
     {"op":"publish","topic":"/joint_states", "msg":{sensor_msgs/JointState}}
-    {"op":"set_config","config":{...}}       full config snapshot for brain's
-                                             odometry sync (see below)
+    {"op":"publish","topic":"/config",       "msg":{"data": "<JSON>"}}
+                                             config snapshot (minus wifi) for
+                                             brain's odometry sync (see below)
     {"op":"notice", "message":"..."}
 
   Note: raw wheel velocities are published; smabo-brain integrates them
@@ -44,11 +48,12 @@ from dc_motors import DiffDrive
 from wheel_publisher import WheelPublisher
 from lidar_ld06 import Ld06
 
-# Topics advertised / subscribed when talking to smabo-brain-ros (rosbridge),
-# which—unlike the legacy relay—requires explicit advertise before publish and
-# subscribe to receive. Outbound carry the /esp32 source prefix (stripped by the
-# relay); inbound are canonical names.
+# Topics advertised / subscribed on every brain connect. Both smabo-brain and
+# smabo-brain-ros (rosbridge_suite) accept this rosbridge handshake at "/", so
+# the ESP32 needs no setting for which brain it talks to. Outbound carry the
+# /esp32 source prefix (stripped by the brain); inbound are canonical names.
 _ROSBRIDGE_ADVERTISE = (
+    ("/esp32/config",       "std_msgs/msg/String"),   # config snapshot for brain odometry
     ("/esp32/wheel_vel",    "smabo_interfaces/msg/WheelVel"),
     ("/esp32/joint_states", "sensor_msgs/msg/JointState"),
     ("/esp32/scan",         "sensor_msgs/msg/LaserScan"),
@@ -168,30 +173,28 @@ class Robot:
         -------
         None
         """
-        # rosbridge (smabo-brain-ros): odometry params come from the ROS launch,
-        # not from the ESP32, and ``set_config`` is not a rosbridge op — skip it.
-        if self.cfg.get("brain.rosbridge"):
-            return
-        self.ws.broadcast(json.dumps({"op": "set_config", "config": self.cfg.data}))
+        # Published as a plain topic (std_msgs/String, JSON in ``data``) so it
+        # also passes through rosbridge. Wi-Fi credentials are left out: on
+        # smabo-brain-ros any rosbridge client could subscribe to it.
+        snapshot = {k: v for k, v in self.cfg.data.items() if k != "wifi"}
+        self.publish("/config", {"data": json.dumps(snapshot)})
 
     def on_brain_connect(self):
         """Run once on every (re)connect to the brain/rosbridge endpoint.
 
-        Legacy relay: push the config snapshot for odometry sync. rosbridge:
-        advertise outbound topics and subscribe to inbound ones (required before
-        publish/receive). Called from the WSClient ``on_connect`` hook.
+        Advertise outbound topics and subscribe to inbound ones (rosbridge
+        requires both before publish/receive), then push the config snapshot
+        for smabo-brain's odometry. Called from the WSClient ``on_connect`` hook.
 
         Returns
         -------
         None
         """
-        if self.cfg.get("brain.rosbridge"):
-            for topic, typ in _ROSBRIDGE_ADVERTISE:
-                self.ws.broadcast(json.dumps({"op": "advertise", "topic": topic, "type": typ}))
-            for topic, typ in _ROSBRIDGE_SUBSCRIBE:
-                self.ws.broadcast(json.dumps({"op": "subscribe", "topic": topic, "type": typ}))
-        else:
-            self.sync_config_to_brain()
+        for topic, typ in _ROSBRIDGE_ADVERTISE:
+            self.ws.broadcast(json.dumps({"op": "advertise", "topic": topic, "type": typ}))
+        for topic, typ in _ROSBRIDGE_SUBSCRIBE:
+            self.ws.broadcast(json.dumps({"op": "subscribe", "topic": topic, "type": typ}))
+        self.sync_config_to_brain()
 
     # ------------------------------------------------------------------ #
     # config / mode REST API (called by http_server.ConfigHTTPServer)

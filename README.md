@@ -110,6 +110,8 @@ mpremote connect /dev/ttyUSB0 repl
 |------|---------|------|
 | 受信 | `/cmd_vel` | 走行速度指令 |
 | 受信 | `/servo/command` | サーボ軌道指令 |
+| 受信 | `/ping` | 疎通確認（受信した `data` をそのまま `/pong` で返す） |
+| 送信 | `/pong` | `/ping` への応答（smabo-web の WebSocket 疎通確認用） |
 | 送信 | `/wheel_vel` | ホイール速度（left/right m/s, dt）。オドメトリ積分は smabo-brain 側 |
 | 送信 | `/joint_states` | 関節角度 |
 | 送信 | `/scan` | LD06 ライダのスキャン（`modes.lidar` 有効時）。Nav2 のセンサ入力 |
@@ -142,8 +144,8 @@ rosbridge_suite + Nav2 + MoveIt2）に接続する場合は `config.json` で次
 
 - 接続先パスは rosbridge の `"/"`（レガシー smabo-brain は `"/esp32"`）。`brain.path` で上書き可。
 - rosbridge は publish 前の **advertise** と受信のための **subscribe** を要求するため、
-  ESP32 は接続時に送信トピック（`/esp32/wheel_vel`・`/esp32/joint_states`・`/esp32/scan`）を
-  advertise し、受信トピック（`/cmd_vel`・`/servo/command`）を subscribe します。
+  ESP32 は接続時に送信トピック（`/esp32/wheel_vel`・`/esp32/joint_states`・`/esp32/scan`・`/esp32/pong`）を
+  advertise し、受信トピック（`/cmd_vel`・`/servo/command`・`/ping`）を subscribe します。
 - rosbridge モードでは `set_config` を送りません（オドメトリのパラメータは ROS 側の launch で
   与えるため）。送信元 prefix `/esp32` は ROS 側の relay が剥がします。
 
