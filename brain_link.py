@@ -21,38 +21,20 @@ handshake, so nothing here depends on which one is running:
                /brain/info  {"data": "{\"protocol\": N, ...}"}: warn if N differs
 
 The ``/esp32`` source prefix lets the brain tell who sent a message; it strips
-it and delivers the canonical name. These tables mirror smabo-brain's
-brain/topics.py, whose tests check that they match.
+it and delivers the canonical name. The tables come from smabo-protocol
+(protocol_gen.py, generated; do not edit it by hand).
 
 Config and mode themselves are set over REST (http_server.py), not here.
 """
 
 import json
 
-# Protocol number of the topic tables below (smabo-brain's PROTOCOL_VERSION) and
-# this firmware's version, sent on /hello after every connect.
-PROTOCOL_VERSION = 1
+# The topic tables and protocol number are generated from smabo-protocol
+# (protocol_gen.py); this firmware's version is sent with them on /hello.
+from protocol_gen import ADVERTISE, PROTOCOL_VERSION, SOURCE_PREFIX, SUBSCRIBE  # noqa: F401
+
 CLIENT_NAME = "smabo-esp32"
 FIRMWARE_VERSION = "0.2.0"
-
-SOURCE_PREFIX = "/esp32"
-
-ADVERTISE = (
-    ("/esp32/config",       "std_msgs/msg/String"),
-    ("/esp32/wheel_vel",    "smabo_interfaces/msg/WheelVel"),
-    ("/esp32/joint_states", "sensor_msgs/msg/JointState"),
-    ("/esp32/scan",         "sensor_msgs/msg/LaserScan"),
-    ("/esp32/pong",         "std_msgs/msg/String"),
-    ("/esp32/config_url",   "std_msgs/msg/String"),
-    ("/esp32/hello",        "std_msgs/msg/String"),
-)
-SUBSCRIBE = (
-    ("/cmd_vel",        "geometry_msgs/msg/Twist"),
-    ("/servo/command",  "trajectory_msgs/msg/JointTrajectory"),
-    ("/ping",           "std_msgs/msg/String"),
-    ("/brain/info",     "std_msgs/msg/String"),
-)
-
 
 class BrainLink:
     """Formats outbound frames for, and parses inbound frames from, the brain.

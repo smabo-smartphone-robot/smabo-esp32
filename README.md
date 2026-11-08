@@ -81,6 +81,7 @@ mpremote connect /dev/ttyUSB0 repl
 | `http_server.py` | config/mode の REST API サーバ（smabo-web が直接アクセス、CORS 対応） |
 | `robot.py` | オーケストレータ（サブシステムの起動停止・モード管理・受信指令の処理） |
 | `brain_link.py` | brain との通信（advertise / subscribe・publish・受信フレームの解釈） |
+| `protocol_gen.py` | トピック表とプロトコル番号（smabo-protocol の `gen.py` が生成。手で直さない） |
 | `pca9685.py` | PCA9685 PWM ドライバ（サーボ用 I2C） |
 | `servo_controller.py` | JointGroup（全サーボ共通） |
 | `random_motion.py` | グループ単位のランダム動作 |
