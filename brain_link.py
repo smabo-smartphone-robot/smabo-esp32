@@ -14,8 +14,11 @@ handshake, so nothing here depends on which one is running:
                  /config_url    std_msgs/String, our REST base URL ("http://ip:port"),
                                 on connect and every 5 s, so smabo-web finds the
                                 config API without being told the ESP32's address
+                 /hello         std_msgs/String, {"protocol", "client", "version"}
+                                once per connect (protocol check)
                {"op":"notice","message":"..."}
   inbound      {"op":"publish","topic":"/cmd_vel" | "/servo/command" | "/ping", ...}
+               /brain/info  {"data": "{\"protocol\": N, ...}"}: warn if N differs
 
 The ``/esp32`` source prefix lets the brain tell who sent a message; it strips
 it and delivers the canonical name. These tables mirror smabo-brain's
@@ -26,6 +29,12 @@ Config and mode themselves are set over REST (http_server.py), not here.
 
 import json
 
+# Protocol number of the topic tables below (smabo-brain's PROTOCOL_VERSION) and
+# this firmware's version, sent on /hello after every connect.
+PROTOCOL_VERSION = 1
+CLIENT_NAME = "smabo-esp32"
+FIRMWARE_VERSION = "0.1.0"
+
 SOURCE_PREFIX = "/esp32"
 
 ADVERTISE = (
@@ -35,11 +44,13 @@ ADVERTISE = (
     ("/esp32/scan",         "sensor_msgs/msg/LaserScan"),
     ("/esp32/pong",         "std_msgs/msg/String"),
     ("/esp32/config_url",   "std_msgs/msg/String"),
+    ("/esp32/hello",        "std_msgs/msg/String"),
 )
 SUBSCRIBE = (
     ("/cmd_vel",        "geometry_msgs/msg/Twist"),
     ("/servo/command",  "trajectory_msgs/msg/JointTrajectory"),
     ("/ping",           "std_msgs/msg/String"),
+    ("/brain/info",     "std_msgs/msg/String"),
 )
 
 
@@ -89,6 +100,25 @@ class BrainLink:
             self._send({"op": "subscribe", "topic": topic, "type": typ})
         self.send_config(config)
         self.send_config_url(config_url)
+        self.send_hello()
+
+    def send_hello(self):
+        """Tell the brain which protocol and firmware version we speak."""
+        self.publish("/hello", {"data": json.dumps({
+            "protocol": PROTOCOL_VERSION, "client": CLIENT_NAME, "version": FIRMWARE_VERSION})})
+
+    def check_brain_info(self, msg):
+        """``/brain/info`` → warning text when the brain's protocol differs, else ``None``."""
+        try:
+            info = json.loads((msg or {}).get("data") or "{}")
+        except ValueError:
+            return None
+        protocol = info.get("protocol") if isinstance(info, dict) else None
+        if protocol is None or protocol == PROTOCOL_VERSION:
+            return None
+        return ("protocol mismatch: brain %s %s speaks %s, smabo-esp32 %s speaks %s"
+                % (info.get("brain"), info.get("version"), protocol,
+                   FIRMWARE_VERSION, PROTOCOL_VERSION))
 
     @staticmethod
     def parse(text):

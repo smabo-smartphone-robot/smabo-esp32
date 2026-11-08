@@ -90,6 +90,7 @@ class Robot:
         self.cfg = config
         self.pca = pca
         self.link = BrainLink(ws)
+        self._protocol_warning = None   # last /brain/info mismatch (warn once)
 
         self.servo_group   = None   # JointGroup for all servos
         self.random_motion = None   # RandomMotion instance
@@ -643,6 +644,13 @@ class Robot:
                          for n, a in self.servo_group.final_angles(names, points).items()}
                 if patch:
                     self.cfg.update({"servos": {"joints": patch}})
+
+        elif topic == "/brain/info":
+            warning = self.link.check_brain_info(msg)
+            if warning and warning != self._protocol_warning:
+                print(warning)
+                self.link.notice(warning)       # shown in smabo-web
+            self._protocol_warning = warning
 
         elif topic == "/ping":
             # Application-level echo so smabo-web can measure end-to-end WS
