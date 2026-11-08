@@ -44,6 +44,10 @@ ERROR_UNKNOWN = 0xFF
 
 CMD_WIFI_SETTINGS = 0x01
 CMD_IDENTIFY = 0x02
+# smabo's own command, outside Improv's range: [len, "host:port", len, invite]
+# from smabo-web before the Wi-Fi settings, so the ESP32 pairs with the brain
+# (pairing.py) as soon as it is on the network.
+CMD_BRAIN_INVITE = 0xF0
 
 CAPS = 0x00  # bit 0 = can identify; the robot has no LED to blink
 
@@ -102,6 +106,41 @@ def parse_wifi_settings(payload):
         raise ImprovError(ERROR_INVALID_RPC)
 
 
+def parse_strings(payload, count):
+    """``count`` length-prefixed UTF-8 strings that fill ``payload`` exactly."""
+    out, i = [], 0
+    for _ in range(count):
+        if i >= len(payload):
+            raise ImprovError(ERROR_INVALID_RPC)
+        n = payload[i]
+        chunk = bytes(payload[i + 1:i + 1 + n])
+        if len(chunk) != n:
+            raise ImprovError(ERROR_INVALID_RPC)
+        try:
+            out.append(chunk.decode())
+        except UnicodeError:
+            raise ImprovError(ERROR_INVALID_RPC)
+        i += 1 + n
+    if i != len(payload):
+        raise ImprovError(ERROR_INVALID_RPC)
+    return out
+
+
+def parse_brain_invite(payload):
+    """``(host, port, code)`` from smabo's invite command."""
+    where, code = parse_strings(payload, 2)
+    host, _, port = where.rpartition(":")
+    if not host:
+        host, port = where, "9090"
+    try:
+        port = int(port)
+    except ValueError:
+        raise ImprovError(ERROR_INVALID_RPC)
+    if not host or not code.strip() or not 0 < port < 65536:
+        raise ImprovError(ERROR_INVALID_RPC)
+    return host, port, code.strip()
+
+
 def rpc_result(command, strings=()):
     """Build an RPC result packet: ``[cmd, len, (len, bytes)*, checksum]``."""
     body = b""
@@ -150,12 +189,13 @@ class ImprovBle:
     (joining Wi-Fi) outside the IRQ.
     """
 
-    def __init__(self, cfg, sta, name):
+    def __init__(self, cfg, sta, name, on_brain=None):
         import bluetooth
 
         self.cfg = cfg
         self.sta = sta
         self.name = name
+        self.on_brain = on_brain   # callable(host, port): the brain moved, reconnect there
         self._conns = set()
         self._rpc = RpcBuffer()
         self._pending = None      # (command, payload) or ImprovError
@@ -242,6 +282,15 @@ class ImprovBle:
         command, payload = packet
         if command == CMD_IDENTIFY:
             return False
+        if command == CMD_BRAIN_INVITE:
+            host, port, code = parse_brain_invite(payload)
+            self.cfg.update({"brain": {"host": host, "port": port, "invite": code}})
+            self.cfg.save_now()
+            if self.on_brain:
+                self.on_brain(host, port)
+            print("Improv: brain at %s:%d, invite received" % (host, port))
+            self._write(self._h_result, rpc_result(CMD_BRAIN_INVITE))
+            return False
         if command != CMD_WIFI_SETTINGS:
             raise ImprovError(ERROR_UNKNOWN_RPC)
         ssid, password = parse_wifi_settings(payload)
@@ -280,12 +329,17 @@ class ImprovBle:
         print("Improv: stopped")
 
 
-def start(cfg, sta):
-    """Start Improv as a background task when Wi-Fi is down; returns the task or None."""
+def start(cfg, sta, on_brain=None):
+    """Start Improv as a background task when Wi-Fi is down; returns the task or None.
+
+    ``on_brain(host, port)`` is called when smabo-web sends the brain's address
+    with an invite (the WebSocket client should reconnect there).
+    """
     if sta.isconnected() or not cfg.get("improv.enabled", True):
         return None
     try:
-        improv = ImprovBle(cfg, sta, cfg.get("improv.name") or "smabo-" + cfg.get("wifi.hostname", "esp32"))
+        improv = ImprovBle(cfg, sta, cfg.get("improv.name") or "smabo-" + cfg.get("wifi.hostname", "esp32"),
+                           on_brain)
     except Exception as e:  # no bluetooth module, BLE busy, out of memory
         print("Improv: unavailable", e)
         return None

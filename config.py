@@ -93,7 +93,14 @@ DEFAULTS = {
         # accept the rosbridge handshake, so nothing here depends on which
         # brain is running. (An old "rosbridge" key in config.json is ignored.)
         "path": "",
+        # Pairing (pairing.py): the token the brain issued, and a one-time
+        # invite code waiting to be used. Never shown over REST.
+        "token": "",
+        "invite": "",
     },
+    # REST API (http_server.py). Once paired it answers only the brain, which
+    # proves itself with the relay key; only the key's SHA-256 is kept here.
+    "http": {"port": 80, "relay_key_sha256": ""},
     "i2c": {"sda": 21, "scl": 22, "freq": 400000},  # classic ESP32 default
     "pca9685": {"address": 0x40, "freq": 50},
 

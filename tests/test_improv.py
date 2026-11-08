@@ -208,3 +208,29 @@ def test_start_only_when_wifi_is_down(ble):
     assert improv.start(cfg, up) is None
     cfg.data["improv"] = {"enabled": False}
     assert improv.start(cfg, FakeSta("x")) is None
+
+
+def test_brain_invite_command_sets_the_brain_and_invite(ble):
+    from improv import CMD_BRAIN_INVITE, parse_brain_invite
+    cfg, moved = FakeCfg(), []
+    service = improv.ImprovBle(cfg, FakeSta("x"), "smabo-test", on_brain=lambda h, p: moved.append((h, p)))
+
+    def strings(*ss):
+        data = b"".join(bytes((len(s.encode()),)) + s.encode() for s in ss)
+        body = bytes((CMD_BRAIN_INVITE, len(data))) + data
+        return body + bytes((checksum(body),))
+
+    async def scenario():
+        task = asyncio.ensure_future(service.run())
+        send(service, ble, strings("192.168.1.10:9090", "ABCD-EFGH"))
+        for _ in range(5):
+            await asyncio.sleep(0)
+        task.cancel()
+
+    asyncio.run(scenario())
+    assert cfg.data["brain"] == {"host": "192.168.1.10", "port": 9090, "invite": "ABCD-EFGH"}
+    assert moved == [("192.168.1.10", 9090)]
+    assert ble.values[service._h_result][0] == CMD_BRAIN_INVITE
+    assert parse_brain_invite(b"\x0bsmabo.local\x01X") == ("smabo.local", 9090, "X")
+    with pytest.raises(ImprovError):
+        parse_brain_invite(b"\x07host:xx\x01X")

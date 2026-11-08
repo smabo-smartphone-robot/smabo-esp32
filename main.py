@@ -21,6 +21,7 @@ from pca9685 import PCA9685
 from ws_client import WSClient
 from http_server import ConfigHTTPServer
 from robot import Robot
+from pairing import Pairing
 import wifi_manager
 import improv
 
@@ -29,8 +30,6 @@ async def amain():
     cfg = Config()
 
     sta = await wifi_manager.connect(cfg)
-    # Wi-Fi down → let smabo-web send new credentials over Bluetooth (Improv)
-    improv.start(cfg, sta)
 
     # I2C bus + PCA9685 servo PWM controller (shared by all joints).
     try:
@@ -58,18 +57,27 @@ async def amain():
     # smabo-brain and smabo-brain-ros both serve the rosbridge handshake at "/";
     # brain.path overrides.
     ws_path = cfg.get("brain.path") or "/"
+    pairing = Pairing(cfg, name=cfg.get("wifi.hostname") or "smabo-esp32")
     ws = WSClient(
         host=cfg.get("brain.host", "192.168.1.100"),
         port=cfg.get("brain.port", 9090),
         path=ws_path,
         on_message=on_message,
         on_connect=on_connect,
+        pairing=pairing,
     )
-    robot = Robot(cfg, pca, ws)
+    robot = Robot(cfg, pca, ws, pairing)
     robot_ref["robot"] = robot
 
+    # Wi-Fi down → let smabo-web send new credentials (and the brain's address
+    # with an invite) over Bluetooth (Improv)
+    def brain_moved(host, port):
+        ws.host, ws.port = host, port
+        ws.restart()
+    improv.start(cfg, sta, brain_moved)
+
     asyncio.create_task(ws.run())
-    asyncio.create_task(ConfigHTTPServer(robot, cfg.get("http.port", 80)).run())
+    asyncio.create_task(ConfigHTTPServer(robot, cfg.get("http.port", 80), pairing).run())
     robot.start()
     asyncio.create_task(robot.announce_config_url_task())
 

@@ -88,7 +88,8 @@ mpremote connect /dev/ttyUSB0 repl
 | `wifi_manager.py` | WiFi 接続・自動再接続 |
 | `improv.py` | Wi-Fi につながらないときの Bluetooth 設定（Improv Wi-Fi） |
 | `ws_client.py` | RFC 6455 WebSocket クライアント（smabo-brainへ接続・自動再接続、外部ライブラリ不要） |
-| `http_server.py` | config/mode の REST API サーバ（smabo-web が直接アクセス、CORS 対応） |
+| `http_server.py` | config/mode の REST API サーバ（ペアリング後は brain の中継用の鍵がある要求だけ） |
+| `pairing.py` | brain とのペアリング（token・招待コード・中継用の鍵の確認） |
 | `robot.py` | オーケストレータ（サブシステムの起動停止・モード管理・受信指令の処理） |
 | `brain_link.py` | brain との通信（advertise / subscribe・publish・受信フレームの解釈） |
 | `protocol_gen.py` | トピック表とプロトコル番号（smabo-protocol の `gen.py` が生成。手で直さない） |
@@ -114,7 +115,19 @@ mpremote connect /dev/ttyUSB0 repl
 
 ## 通信プロトコル
 
-起動時に brain（`ws://<brain-host>:<port>/`、接続先は `config.json` の `brain` で指定）へクライアントとして接続し、JSON送受信します。フォーマットはrosbridgeの v2.0 互換。認証なし（信頼済みLAN内利用前提）。
+起動時に brain（`ws://<brain-host>:<port>/`、接続先は `config.json` の `brain` で指定）へクライアントとして接続し、JSON送受信します。フォーマットはrosbridgeの v2.0 互換。
+
+### brain とのペアリング
+
+smabo-brain はペアリングした機器だけを受け付けます（`pairing.py`）。
+
+1. smabo-web の「Devices」→「Add ESP32」で招待コードを出す
+2. ESP32 に届ける。Bluetooth の Wi-Fi 設定（Improv）を smabo-web から行うと、brain の場所と招待コードも一緒に送られます。Wi-Fi につながっていてペアリング前なら、招待ボックスから ESP32 のアドレスに送るか、`POST /config {"brain": {"invite": "ABCD-EFGH"}}` を送ります
+3. ESP32 は次の接続でコードを見せ、brain から token と中継用の鍵を受け取ります。token は `config.json` の `brain.token` に、鍵は SHA-256 だけを `http.relay_key_sha256` に保存します
+
+接続のたびに、最初のフレームで token を見せます（`{"op": "auth", "token": …}`）。ペアリング後の REST API は、brain が付ける中継用の鍵（`X-Smabo-Relay-Key`）のない要求を 401 で断り、CORS も返しません。smabo-web の設定は brain の `/devices/esp32/…` を通ります。token・招待コード・鍵のハッシュは、`GET /config` にも `/config` トピックにも出しません（代わりに `brain.paired` を返します）。
+
+smabo-web で外す（または brain を `--reset-pairing` で初期化する）と、brain に断られた時点で ESP32 はペアリングを忘れ、また招待コードを受け付けます。`--no-auth` の brain と smabo-brain-ros は token に答えないので、2 秒待ってから従来どおりつなぎます。
 
 brain は smabo-brain でも smabo-brain-ros でも同じ手順なので、どちらを使うかの設定はありません。接続のたびに、送信トピックを **advertise**、受信トピックを **subscribe** してから config スナップショットを送ります。送信トピックには送信元 prefix `/esp32` が付き、brain が剥がします。実装は `brain_link.py` です。
 
@@ -131,10 +144,11 @@ brain は smabo-brain でも smabo-brain-ros でも同じ手順なので、ど�
 | 送信 | `/scan` | LD06 ライダのスキャン（`modes.lidar` 有効時）。Nav2 のセンサ入力 |
 | 送信 | `/config` | config スナップショット（std_msgs/String の data に JSON。Wi-Fi 設定は除く）。smabo-brain のオドメトリ同期用（下記参照） |
 
-### 設定 REST API（smabo-web ↔ ESP32 直通）
+### 設定 REST API
 
-config / mode は smabo-brain を介さず、ESP32 の HTTP サーバ（既定 `:80`、CORS 全許可）に
-smabo-web から直接アクセスします。
+config / mode は ESP32 の HTTP サーバ（既定 `:80`）にあります。smabo-web は brain の
+`/devices/esp32/…` を通して読み書きします（brain が中継用の鍵を付けて転送）。
+ペアリング前と `--no-auth` の brain では、smabo-web が直接アクセスします（CORS 全許可）。
 
 | メソッド | パス | 内容 |
 |----------|------|------|

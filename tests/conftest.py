@@ -49,3 +49,16 @@ machine.Pin = FakePin
 machine.PWM = FakePWM
 machine.reset = lambda: None
 sys.modules.setdefault("machine", machine)
+
+
+# MicroPython's StreamWriter has aclose(); CPython's has close() + wait_closed().
+import asyncio  # noqa: E402
+
+if not hasattr(asyncio.StreamWriter, "aclose"):
+    async def _aclose(self):
+        self.close()
+        try:
+            await self.wait_closed()
+        except Exception:
+            pass
+    asyncio.StreamWriter.aclose = _aclose

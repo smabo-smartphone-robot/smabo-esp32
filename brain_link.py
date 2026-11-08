@@ -32,6 +32,7 @@ import json
 # The topic tables and protocol number are generated from smabo-protocol
 # (protocol_gen.py); this firmware's version is sent with them on /hello.
 from protocol_gen import ADVERTISE, PROTOCOL_VERSION, SOURCE_PREFIX, SUBSCRIBE  # noqa: F401
+from pairing import without_secrets
 
 CLIENT_NAME = "smabo-esp32"
 FIRMWARE_VERSION = "0.2.0"
@@ -65,7 +66,7 @@ class BrainLink:
         Wi-Fi credentials are left out: on smabo-brain-ros any rosbridge client
         could subscribe to this topic.
         """
-        snapshot = {k: v for k, v in config.items() if k != "wifi"}
+        snapshot = {k: v for k, v in without_secrets(config).items() if k != "wifi"}
         self.publish("/config", {"data": json.dumps(snapshot)})
 
     def send_config_url(self, url):

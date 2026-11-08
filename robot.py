@@ -22,6 +22,7 @@ from dc_motors import DiffDrive
 from wheel_publisher import WheelPublisher
 from lidar_ld06 import Ld06
 from brain_link import BrainLink
+from pairing import take_secrets, without_secrets
 
 def _reboot_reasons(config_dict):
     """Find config keys in a patch that require a full hardware reboot.
@@ -75,7 +76,7 @@ def drop_masked_wifi_password(patch):
 class Robot:
     """Top-level orchestrator: owns subsystems, tasks, and message dispatch."""
 
-    def __init__(self, config, pca, ws):
+    def __init__(self, config, pca, ws, pairing=None):
         """Store dependencies and initialise empty subsystem/task state.
 
         Parameters
@@ -86,9 +87,13 @@ class Robot:
             The servo PWM controller shared by all joints.
         ws : ws_client.WSClient
             The WebSocket client to the brain, used to send outbound messages.
+        pairing : pairing.Pairing, optional
+            Pairing with the brain: takes invites from REST, reports status.
         """
         self.cfg = config
         self.pca = pca
+        self.ws = ws
+        self.pairing = pairing
         self.link = BrainLink(ws)
         self._protocol_warning = None   # last /brain/info mismatch (warn once)
 
@@ -150,9 +155,14 @@ class Robot:
         -------
         dict
             The current configuration, with ``wifi.password`` replaced by
-            ``"****"`` (write-only: never sent back out).
+            ``"****"`` (write-only: never sent back out), without the pairing
+            secrets, and with ``brain.paired``.
         """
-        data = dict(self.cfg.data)
+        data = without_secrets(self.cfg.data)
+        if self.pairing is not None:
+            brain = dict(data.get("brain") or {})
+            brain.update(self.pairing.status())
+            data["brain"] = brain
         wifi = data.get("wifi")
         if isinstance(wifi, dict) and "password" in wifi:
             wifi = dict(wifi)
@@ -173,7 +183,18 @@ class Robot:
         -------
         None
         """
-        patch = drop_masked_wifi_password(patch or {})
+        patch, invite = take_secrets(drop_masked_wifi_password(patch or {}))
+        brain = patch.get("brain")
+        if isinstance(brain, dict) and "paired" in brain:    # read-only status sent back
+            brain = dict(brain)
+            del brain["paired"]
+            brain.pop("refused", None)
+            patch["brain"] = brain
+        if invite and self.pairing is not None:
+            self.pairing.set_invite(invite)
+            self.ws.restart()                 # pair on the next connection
+        if not patch or patch == {"brain": {}}:
+            return
         self._on_set_config(patch)
         self.sync_config_to_brain()
 
