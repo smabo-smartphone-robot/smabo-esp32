@@ -2,7 +2,7 @@
 
 Boot order:
   1. load persistent config
-  2. bring up WiFi (+ keepalive)
+  2. bring up WiFi (+ keepalive); if it fails, offer Wi-Fi setup over BLE
   3. init I2C + PCA9685 (servo PWM bus)
   4. connect to smabo-brain as a WebSocket client
   5. build the Robot orchestrator and enable the configured modes
@@ -22,12 +22,15 @@ from ws_client import WSClient
 from http_server import ConfigHTTPServer
 from robot import Robot
 import wifi_manager
+import improv
 
 
 async def amain():
     cfg = Config()
 
     sta = await wifi_manager.connect(cfg)
+    # Wi-Fi down → let smabo-web send new credentials over Bluetooth (Improv)
+    improv.start(cfg, sta)
 
     # I2C bus + PCA9685 servo PWM controller (shared by all joints).
     try:

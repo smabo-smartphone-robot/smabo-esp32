@@ -79,6 +79,12 @@ DEFAULTS = {
         "password": "your-password",
         "hostname": "esp32-robot",
     },
+    # Wi-Fi setup over Bluetooth (improv.py): advertised only while Wi-Fi is
+    # down at boot. name defaults to "smabo-" + wifi.hostname.
+    "improv": {
+        "enabled": True,
+        "name": "",
+    },
     # smabo-brain relay server / smabo-brain-ros rosbridge to connect to
     "brain": {
         "host": "192.168.1.100",

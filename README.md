@@ -70,6 +70,15 @@ mpremote connect /dev/ttyUSB0 repl
 ```
 
 
+### Wi-Fi を Bluetooth で設定する（Improv）
+
+起動時に Wi-Fi へつながらないと、ESP32 は Bluetooth で `smabo-<hostname>` という名前を出して待ちます。smabo-web の設定画面（または smabo-esp32 のテンプレート）にある「ESP32 Wi-Fi setup over Bluetooth」で **Find ESP32** を押し、SSID とパスワードを送ると、ESP32 がつないでみて、成功したら `config.json` に保存し、設定 API の URL を返します。smabo-web はその URL を ESP32 のホストに設定します。
+
+- [Improv Wi-Fi](https://www.improv-wifi.com/ble/) の BLE 版なので、他の Improv 対応ツールからも設定できます。
+- ブラウザは Chrome か Edge で、ページを `https://` か `http://localhost` で開いたときだけ使えます（Web Bluetooth の制限）。
+- Bluetooth を出すのは Wi-Fi につながらないときだけです。設定が済むと 10 秒後に止めます。つながっている ESP32 の Wi-Fi は Bluetooth からは変えられません（設定 API か `config.json` で変えます）。
+- Wi-Fi につながらない間は、近くの誰でも Wi-Fi 設定を送れます。気になる場合は `"improv": {"enabled": false}` で止めます。
+
 ## モジュール構成
 
 | ファイル | 役割 |
@@ -77,6 +86,7 @@ mpremote connect /dev/ttyUSB0 repl
 | `main.py` | 起動エントリ・asyncio イベントループ |
 | `config.py` | 永続設定（RAM + config.json、デバウンス保存） |
 | `wifi_manager.py` | WiFi 接続・自動再接続 |
+| `improv.py` | Wi-Fi につながらないときの Bluetooth 設定（Improv Wi-Fi） |
 | `ws_client.py` | RFC 6455 WebSocket クライアント（smabo-brainへ接続・自動再接続、外部ライブラリ不要） |
 | `http_server.py` | config/mode の REST API サーバ（smabo-web が直接アクセス、CORS 対応） |
 | `robot.py` | オーケストレータ（サブシステムの起動停止・モード管理・受信指令の処理） |
