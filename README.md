@@ -161,6 +161,15 @@ LD06 ライダをマイコンの UART に直結（ライダ TX → MCU RX）し�
 有効化は REST（`POST /mode {"lidar": true}`）か `config.json` の `modes.lidar`。
 UART ピン変更は再起動せずホットリロードします。
 
+## テスト
+
+ESP32 がなくても、PC の Python でモーターの計算・設定の読み書き・停止タイマーを確かめられます。`machine` モジュールは `tests/conftest.py` の偽物に置き換わります。
+
+```bash
+pip install pytest
+python -m pytest tests
+```
+
 ## バージョンと互換性
 
 ほかの smabo リポジトリとは、同じ minor 番号（`0.2.x` など）どうしで組み合わせます。対応表は
