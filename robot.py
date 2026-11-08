@@ -51,6 +51,27 @@ def _reboot_reasons(config_dict):
     return reasons
 
 
+
+WIFI_PASSWORD_MASK = "****"
+
+
+def drop_masked_wifi_password(patch):
+    """Return ``patch`` without a ``wifi.password`` equal to the mask.
+
+    ``GET /config`` shows the password as ``"****"``; a client that sends the
+    settings back unchanged must not overwrite the real password with it.
+    """
+    wifi = patch.get("wifi")
+    if isinstance(wifi, dict) and wifi.get("password") == WIFI_PASSWORD_MASK:
+        wifi = dict(wifi)
+        del wifi["password"]
+        patch = dict(patch)
+        if wifi:
+            patch["wifi"] = wifi
+        else:
+            del patch["wifi"]
+    return patch
+
 class Robot:
     """Top-level orchestrator: owns subsystems, tasks, and message dispatch."""
 
@@ -127,9 +148,17 @@ class Robot:
         Returns
         -------
         dict
-            The current configuration.
+            The current configuration, with ``wifi.password`` replaced by
+            ``"****"`` (write-only: never sent back out).
         """
-        return self.cfg.data
+        data = dict(self.cfg.data)
+        wifi = data.get("wifi")
+        if isinstance(wifi, dict) and "password" in wifi:
+            wifi = dict(wifi)
+            if wifi["password"]:
+                wifi["password"] = WIFI_PASSWORD_MASK
+            data["wifi"] = wifi
+        return data
 
     def set_config(self, patch):
         """Apply a config patch from REST, then resync brain (``POST /config``).
@@ -143,7 +172,8 @@ class Robot:
         -------
         None
         """
-        self._on_set_config(patch or {})
+        patch = drop_masked_wifi_password(patch or {})
+        self._on_set_config(patch)
         self.sync_config_to_brain()
 
     def set_mode(self, partial):

@@ -3,7 +3,7 @@
 smabo-web talks to the ESP32 *directly* for configuration, bypassing
 smabo-brain:
 
-    GET  /config           → full live config (JSON)
+    GET  /config           → full live config (JSON, wifi.password shown as "****")
     POST /config  {patch}  → deep-merge a config patch (may reboot)
     POST /mode    {modes}  → enable/disable subsystems
 
