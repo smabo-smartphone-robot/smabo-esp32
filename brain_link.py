@@ -33,7 +33,7 @@ import json
 # this firmware's version, sent on /hello after every connect.
 PROTOCOL_VERSION = 1
 CLIENT_NAME = "smabo-esp32"
-FIRMWARE_VERSION = "0.1.0"
+FIRMWARE_VERSION = "0.2.0"
 
 SOURCE_PREFIX = "/esp32"
 
