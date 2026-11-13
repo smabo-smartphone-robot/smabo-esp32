@@ -193,12 +193,14 @@ DEFAULTS = {
     # LD06 lidar (modes.lidar): wired directly to the MCU over UART
     # (lidar TX → MCU RX). Parsed into sensor_msgs/LaserScan and published as
     # /scan for smabo-brain-ros / Nav2. Changing the UART pin hot-reloads the
-    # subsystem (no reboot). Default rx pin targets ESP32-S3; override per board.
+    # subsystem (no reboot). Defaults target the classic ESP32 DevKitC: the
+    # adjacent free pads 4/0 on the right header. "tx" is never wired (the LD06
+    # only transmits) but is set so the UART does not grab its default TX pin.
     # -----------------------------------------------------------------------
     "lidar": {
-        "uart": 1,
-        "rx": 20,
-        "tx": -1,                  # unused; the LD06 only transmits
+        "uart": 2,
+        "rx": 4,
+        "tx": 0,
         "baud": 230400,
         "frame_id": "laser",       # matches smabo_description's lidar frame
         "bins": 360,               # /scan ranges length (1 bin ≈ 1°)

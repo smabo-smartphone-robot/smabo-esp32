@@ -175,7 +175,7 @@ LD06 ライダをマイコンの UART に直結（ライダ TX → MCU RX）し�
 
 | `lidar` 設定 | 既定 | 説明 |
 |---|---|---|
-| `uart` / `rx` / `tx` | `1` / `20` / `-1` | UART 番号・RX ピン・TX（未使用） |
+| `uart` / `rx` / `tx` | `2` / `4` / `0` | UART 番号・RX ピン・TX（配線しない。UART が既定の TX ピンを使わないよう空きピンを指定） |
 | `baud` | `230400` | LD06 のボーレート |
 | `frame_id` | `laser` | `/scan` の frame（smabo_description のライダ frame と一致） |
 | `bins` | `360` | `ranges` 配列長（1 bin ≈ 1°） |
