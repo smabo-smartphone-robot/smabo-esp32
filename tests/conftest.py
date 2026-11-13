@@ -21,6 +21,8 @@ class FakePin:
 
     def __init__(self, num, mode=None, pull=None):
         self.num = num
+        self.mode = mode
+        self.pull = pull
         self._value = 0
 
     def value(self, v=None):

@@ -4,11 +4,21 @@ NOTE: This is a software (IRQ) decoder and *will* lose counts at high speed
 or high resolution.  For reliable counting use a MicroPython build that
 exposes the ESP32 PCNT peripheral and swap this class out.
 
-Also note: ESP32 GPIO 34-39 are input-only with NO internal pull resistors,
-so the default encoder pins need external pull-ups.
+The A/B pins use the internal pull-up, so open-collector encoders work
+without external resistors (push-pull encoders are unaffected). Classic ESP32
+GPIO 34-39 have NO internal pull resistors: encoders wired there need external
+pull-ups.
 """
 
 from machine import Pin
+
+
+def _input(pin):
+    """Return an input Pin with the internal pull-up, or without where the pin has none."""
+    try:
+        return Pin(pin, Pin.IN, Pin.PULL_UP)
+    except (ValueError, OSError):
+        return Pin(pin, Pin.IN)
 
 
 class QuadEncoder:
@@ -25,8 +35,8 @@ class QuadEncoder:
             GPIO number of the encoder B channel.
         """
         self._count = 0
-        self._a = Pin(pin_a, Pin.IN)
-        self._b = Pin(pin_b, Pin.IN)
+        self._a = _input(pin_a)
+        self._b = _input(pin_b)
         self._a.irq(trigger=Pin.IRQ_RISING | Pin.IRQ_FALLING, handler=self._on_a)
         self._b.irq(trigger=Pin.IRQ_RISING | Pin.IRQ_FALLING, handler=self._on_b)
 

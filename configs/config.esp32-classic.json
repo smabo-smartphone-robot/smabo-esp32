@@ -5,13 +5,17 @@
         "hostname": "smabo-esp32"
     },
     "brain": { "host": "smabo-brain.local", "port": 9090 },
-    "i2c": { "scl": 19, "sda": 18, "freq": 400000 },
+    "i2c": { "scl": 5, "sda": 18, "freq": 400000 },
     "dc": {
         "pins": {
             "pwma": 32, "ain2": 33, "ain1": 25,
             "stby": 26,
             "bin1": 27, "bin2": 14, "pwmb": 12
         }
+    },
+    "encoder": {
+        "left": { "a": 19, "b": 21 },
+        "right": { "a": 22, "b": 23 }
     },
     "lidar": { "uart": 2, "rx": 13, "tx": 15 }
 }
