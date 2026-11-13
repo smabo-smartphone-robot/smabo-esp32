@@ -70,6 +70,9 @@ class Pairing:
         self.cfg = cfg
         self.name = name
         self.refused = ""
+        # False while the brain says it does not check tokens (it runs without
+        # --pairing): then smabo-web talks to this REST directly, so it opens.
+        self.brain_checks_tokens = True
 
     @property
     def token(self):
@@ -77,8 +80,8 @@ class Pairing:
 
     @property
     def locked(self):
-        """Paired with a relay key: REST only for the brain, no CORS."""
-        return bool(self.cfg.get("http.relay_key_sha256"))
+        """Paired with a relay key and the brain checks tokens: REST only for the brain, no CORS."""
+        return bool(self.cfg.get("http.relay_key_sha256")) and self.brain_checks_tokens
 
     def set_invite(self, code):
         self.cfg.update({"brain": {"invite": code}})
@@ -100,6 +103,15 @@ class Pairing:
             return None
         ok = frame.get("ok") is True
         reason = str(frame.get("reason") or "")
+        if reason == "no_auth" or frame.get("auth") is False:
+            # The brain does not check tokens: keep ours for when it does.
+            self.brain_checks_tokens = False
+            self.refused = ""
+            if op == "pair":
+                self.cfg.update({"brain": {"invite": ""}})
+                self.cfg.save_now()
+            return True
+        self.brain_checks_tokens = True
         if op == "pair":
             if ok and frame.get("token"):
                 key = frame.get("relay_key") or ""
@@ -123,7 +135,7 @@ class Pairing:
     def relay_allowed(self, key):
         """Whether a REST request may proceed (anything while not paired)."""
         want = self.cfg.get("http.relay_key_sha256") or ""
-        if not want:
+        if not want or not self.brain_checks_tokens:
             return True
         return bool(key) and same(sha256_hex(key), want)
 

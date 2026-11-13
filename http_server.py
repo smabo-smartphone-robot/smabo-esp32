@@ -1,7 +1,7 @@
 """Minimal async HTTP server exposing the config/mode REST API.
 
 smabo-web reaches it through smabo-brain's /devices/esp32/... relay (or
-directly, with a brain started with --no-auth):
+directly with smabo-brain-ros, and for an invite before pairing):
 
     GET  /config           → full live config (JSON, wifi.password shown as "****")
     POST /config  {patch}  → deep-merge a config patch (may reboot)

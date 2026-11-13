@@ -4,7 +4,7 @@ ESP32用ロボットファームウェア（MicroPython製）。
 
 中継サーバ（smabo-brain）へWebSocketクライアントとして接続し、JSON命令を受け取って走行・サーボを制御します。エンコーダのホイール速度を送信し、オドメトリの積分は smabo-brain 側で行います。
 
-設定（config / mode）は WebSocket ではなく、ESP32 が直接公開する **REST API** で smabo-web から読み書きします（`http_server.py`）。リアルタイム制御・テレメトリは従来どおり smabo-brain 経由の WebSocket です。
+設定（config / mode）は WebSocket ではなく、ESP32 が公開する **REST API** で読み書きします（`http_server.py`）。smabo-web は smabo-brain を通して送ります（smabo-brain-ros では直接）。リアルタイム制御・テレメトリは従来どおり smabo-brain 経由の WebSocket です。
 
 
 
@@ -127,7 +127,7 @@ smabo-brain はペアリングした機器だけを受け付けます（`pairing
 
 接続のたびに、最初のフレームで token を見せます（`{"op": "auth", "token": …}`）。ペアリング後の REST API は、brain が付ける中継用の鍵（`X-Smabo-Relay-Key`）のない要求を 401 で断り、CORS も返しません。smabo-web の設定は brain の `/devices/esp32/…` を通ります。token・招待コード・鍵のハッシュは、`GET /config` にも `/config` トピックにも出しません（代わりに `brain.paired` を返します）。
 
-smabo-web で外す（または brain を `--reset-pairing` で初期化する）と、brain に断られた時点で ESP32 はペアリングを忘れ、また招待コードを受け付けます。`--no-auth` の brain と smabo-brain-ros は token に答えないので、2 秒待ってから従来どおりつなぎます。
+smabo-web で外す（または brain を `--reset-pairing` で初期化する）と、brain に断られた時点で ESP32 はペアリングを忘れ、また招待コードを受け付けます。ペアリングなし（既定。`--pairing` なし）の brain は「ペアリングしない」とすぐ答えるので、そのままつなぎます。smabo-brain-ros は token に答えないので、2 秒待ってから従来どおりつなぎます。
 
 brain は smabo-brain でも smabo-brain-ros でも同じ手順なので、どちらを使うかの設定はありません。接続のたびに、送信トピックを **advertise**、受信トピックを **subscribe** してから config スナップショットを送ります。送信トピックには送信元 prefix `/esp32` が付き、brain が剥がします。実装は `brain_link.py` です。
 
@@ -148,7 +148,7 @@ brain は smabo-brain でも smabo-brain-ros でも同じ手順なので、ど�
 
 config / mode は ESP32 の HTTP サーバ（既定 `:80`）にあります。smabo-web は brain の
 `/devices/esp32/…` を通して読み書きします（brain が中継用の鍵を付けて転送）。
-ペアリング前と `--no-auth` の brain では、smabo-web が直接アクセスします（CORS 全許可）。
+ペアリング前と、ペアリングなし（既定）の brain につながっている間は、誰からの要求も受け付けます（CORS 全許可。ペアリング前の招待コードや smabo-brain-ros のときは、smabo-web が直接送ります）。ペアリング済みでも、ペアリングなしの brain につながっている間は同じです。
 
 | メソッド | パス | 内容 |
 |----------|------|------|

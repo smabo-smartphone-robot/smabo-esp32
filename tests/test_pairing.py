@@ -192,3 +192,12 @@ def test_ws_client_pairs_then_authenticates(cfg):
         assert [f["op"] for f in seen] == ["pair", "auth"]
         assert cfg.get("brain.token") == "tok" and len(on_connect) == 2
     asyncio.run(go())
+
+
+def test_rest_opens_while_the_brain_skips_pairing(cfg):
+    p = paired(cfg, key="k")
+    assert p.locked and not p.relay_allowed(None)
+    assert p.handle_reply({"op": "auth", "ok": True, "auth": False, "reason": "no_auth"}) is True
+    assert p.token == "tok" and not p.locked and p.relay_allowed(None)
+    p.handle_reply({"op": "auth", "ok": True, "role": "esp32", "name": "smabo", "id": "x"})
+    assert p.locked and p.relay_allowed("k") and not p.relay_allowed(None)

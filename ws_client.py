@@ -162,8 +162,8 @@ class WSClient:
     async def _authenticate(self, reader, writer):
         """Send the token or invite and wait for the answer.
 
-        A brain started with --no-auth (or smabo-brain-ros) may not answer;
-        after 2 s we go on as before. False when the brain refused us.
+        A brain without pairing (the default) says so at once; smabo-brain-ros
+        does not answer, and after 2 s we go on as before. False when the brain refused us.
         """
         first = self.pairing.first_frame() if self.pairing is not None else None
         if first is None:
