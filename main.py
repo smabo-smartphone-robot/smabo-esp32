@@ -2,7 +2,7 @@
 
 Boot order:
   1. load persistent config
-  2. bring up WiFi (+ keepalive)
+  2. bring up WiFi (+ keepalive); if it fails, offer Wi-Fi setup over BLE
   3. init I2C + PCA9685 (servo PWM bus)
   4. connect to smabo-brain as a WebSocket client
   5. build the Robot orchestrator and enable the configured modes
@@ -21,7 +21,9 @@ from pca9685 import PCA9685
 from ws_client import WSClient
 from http_server import ConfigHTTPServer
 from robot import Robot
+from pairing import Pairing
 import wifi_manager
+import improv
 
 
 async def amain():
@@ -48,25 +50,36 @@ async def amain():
         return robot_ref["robot"].on_message(client, text)
 
     def on_connect():
-        # Legacy relay: push config for odometry sync. rosbridge: advertise
-        # outbound + subscribe inbound topics. (config is set over REST.)
+        # advertise outbound + subscribe inbound topics, then push config for
+        # brain odometry. (config itself is set over REST.)
         return robot_ref["robot"].on_brain_connect()
 
-    # rosbridge serves at "/", the legacy relay at "/esp32"; brain.path overrides.
-    ws_path = cfg.get("brain.path") or ("/" if cfg.get("brain.rosbridge") else "/esp32")
+    # smabo-brain and smabo-brain-ros both serve the rosbridge handshake at "/";
+    # brain.path overrides.
+    ws_path = cfg.get("brain.path") or "/"
+    pairing = Pairing(cfg, name=cfg.get("wifi.hostname") or "smabo-esp32")
     ws = WSClient(
         host=cfg.get("brain.host", "192.168.1.100"),
         port=cfg.get("brain.port", 9090),
         path=ws_path,
         on_message=on_message,
         on_connect=on_connect,
+        pairing=pairing,
     )
-    robot = Robot(cfg, pca, ws)
+    robot = Robot(cfg, pca, ws, pairing)
     robot_ref["robot"] = robot
 
+    # Wi-Fi down → let smabo-web send new credentials (and the brain's address
+    # with an invite) over Bluetooth (Improv)
+    def brain_moved(host, port):
+        ws.host, ws.port = host, port
+        ws.restart()
+    improv.start(cfg, sta, brain_moved)
+
     asyncio.create_task(ws.run())
-    asyncio.create_task(ConfigHTTPServer(robot, cfg.get("http.port", 80)).run())
+    asyncio.create_task(ConfigHTTPServer(robot, cfg.get("http.port", 80), pairing).run())
     robot.start()
+    asyncio.create_task(robot.announce_config_url_task())
 
     asyncio.create_task(cfg.autosave_task())
     asyncio.create_task(wifi_manager.keepalive_task(cfg, sta))

@@ -1,6 +1,7 @@
 """WebSocket client for MicroPython.
 
-Connects OUT to smabo-brain's /esp32 endpoint and auto-reconnects.
+Connects OUT to the brain (ws://host:port/) and auto-reconnects. With a
+pairing.Pairing, the first frame is the token or an invite code (pairing.py).
 Exposes broadcast() so Robot is unchanged from the WSServer era.
 
 Client→server frames MUST be masked (RFC 6455 §5.3);
@@ -8,6 +9,7 @@ server→client frames are unmasked.
 """
 
 import binascii
+import json
 import os
 
 try:
@@ -49,13 +51,26 @@ class WSClient:
     kept for API compatibility.
     """
 
-    def __init__(self, host, port, path, on_message, on_connect=None):
+    def __init__(self, host, port, path, on_message, on_connect=None, pairing=None):
         self.host = host
         self.port = port
         self.path = path
         self.on_message = on_message   # callable(client, text)
         self.on_connect = on_connect   # optional callable() run after each connect
+        # pairing.Pairing: the first frame (token / invite) and the brain's answer
+        self.pairing = pairing
         self._writer = None
+        self._refused = False
+
+    def restart(self):
+        """Drop the connection so the next attempt uses new settings (e.g. an invite)."""
+        w = self._writer
+        self._writer = None
+        if w is not None:
+            try:
+                w.close()
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------ #
     # Public API (matches WSServer interface used by Robot)
@@ -84,14 +99,20 @@ class WSClient:
             except Exception as e:
                 print("WSClient error:", e)
             self._writer = None
-            print("WSClient: reconnect in 3 s …")
-            await asyncio.sleep(3)
+            # A refused token stays refused until someone pairs this ESP32 again
+            delay = 15 if self._refused else 3
+            print("WSClient: reconnect in %d s …" % delay)
+            await asyncio.sleep(delay)
 
     async def _connect_and_run(self):
         reader, writer = await asyncio.open_connection(self.host, self.port)
         try:
             await self._handshake(reader, writer)
             self._writer = writer
+            self._refused = False
+            if not await self._authenticate(reader, writer):
+                self._refused = True
+                return
             print("WSClient: connected to %s:%d%s" % (self.host, self.port, self.path))
             if self.on_connect is not None:
                 try:
@@ -126,6 +147,47 @@ class WSClient:
             if not line or line == b"\r\n":
                 break
 
+    def _auth_reply(self, text):
+        """Hand an auth / pair answer to the pairing; True if it was one."""
+        if self.pairing is None or ('"auth"' not in text and '"pair"' not in text):
+            return None
+        try:
+            frame = json.loads(text)
+        except ValueError:
+            return None
+        if not isinstance(frame, dict):
+            return None
+        return self.pairing.handle_reply(frame)
+
+    async def _authenticate(self, reader, writer):
+        """Send the token or invite and wait for the answer.
+
+        A brain without pairing (the default) says so at once; smabo-brain-ros
+        does not answer, and after 2 s we go on as before. False when the brain refused us.
+        """
+        first = self.pairing.first_frame() if self.pairing is not None else None
+        if first is None:
+            return True
+        writer.write(_mask_frame(json.dumps(first)))
+        await writer.drain()
+        try:
+            opcode, payload = await asyncio.wait_for(self._read_frame(reader, writer), 2)
+        except asyncio.TimeoutError:
+            return True
+        if opcode is None:
+            return False
+        try:
+            text = payload.decode()
+        except Exception:
+            return True
+        ok = self._auth_reply(text)
+        if ok is None:                      # an old brain already talking
+            res = self.on_message(None, text)
+            if hasattr(res, "__await__"):
+                await res
+            return True
+        return ok
+
     async def _drain(self):
         try:
             if self._writer:
@@ -143,6 +205,25 @@ class WSClient:
         return buf
 
     async def _read_loop(self, reader, writer):
+        while True:
+            opcode, payload = await self._read_frame(reader, writer)
+            if opcode is None:
+                return
+            try:
+                text = payload.decode()
+            except Exception:
+                continue
+            if self._auth_reply(text) is not None:
+                continue
+            res = self.on_message(None, text)   # None = no per-client handle
+            if hasattr(res, "__await__"):
+                await res
+
+    async def _read_frame(self, reader, writer):
+        """The next text / binary frame as ``(opcode, payload)``; ``(None, b"")`` on close.
+
+        Pings are answered here.
+        """
         while True:
             hdr = await self._read_exact(reader, 2)
             opcode = hdr[0] & 0x0F
@@ -164,15 +245,9 @@ class WSClient:
             if opcode == 0x8:                       # close
                 writer.write(_mask_frame(b"", 0x8))
                 await writer.drain()
-                return
+                return None, b""
             elif opcode == 0x9:                     # ping → pong
                 writer.write(_mask_frame(payload, 0xA))
                 await writer.drain()
             elif opcode in (0x1, 0x2):              # text / binary
-                try:
-                    text = payload.decode()
-                except Exception:
-                    continue
-                res = self.on_message(None, text)   # None = no per-client handle
-                if hasattr(res, "__await__"):
-                    await res
+                return opcode, payload

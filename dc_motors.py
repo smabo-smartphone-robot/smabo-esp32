@@ -22,6 +22,7 @@ except AttributeError:
     _ticks_diff = lambda a, b: a - b
 
 _DUTY_MAX = 1023  # 10-bit duty on ESP32 LEDC
+_COAST = 0.001    # |duty| at or below this coasts the motor (see _Motor.drive)
 
 
 def _clamp(v, lo, hi):
@@ -42,6 +43,31 @@ def _clamp(v, lo, hi):
         ``v`` constrained to ``[lo, hi]``.
     """
     return lo if v < lo else hi if v > hi else v
+
+
+def _with_min_duty(duty, min_duty):
+    """Raise a non-zero duty to at least ``min_duty`` (static-friction floor).
+
+    Low duties (e.g. slow in-place rotation) may not overcome static friction.
+    ``dc.min_duty`` lifts any non-zero command to that floor while keeping its
+    sign; a duty the motor treats as zero (|duty| <= 0.001, see ``_Motor.drive``)
+    stays zero so the robot still stops. 0 disables the floor.
+
+    Parameters
+    ----------
+    duty : float
+        Normalised duty in [-1, 1].
+    min_duty : float
+        Floor in [0, 1].
+
+    Returns
+    -------
+    float
+        The duty with the floor applied.
+    """
+    if abs(duty) <= _COAST or min_duty <= 0.0 or abs(duty) >= min_duty:
+        return duty
+    return min_duty if duty > 0 else -min_duty
 
 
 class _Motor:
@@ -86,10 +112,10 @@ class _Motor:
             value = -value
         duty = int(abs(value) * _DUTY_MAX)
         duty = _clamp(duty, 0, _DUTY_MAX)
-        if value > 0.001:
+        if value > _COAST:
             self.in1.value(1)
             self.in2.value(0)
-        elif value < -0.001:
+        elif value < -_COAST:
             self.in1.value(0)
             self.in2.value(1)
         else:
@@ -152,32 +178,21 @@ class DiffDrive:
         max_lin = self.cfg.get("dc.max_linear", 0.3)
         max_ang = self.cfg.get("dc.max_angular", 1.5)
         sep = self.cfg.get("dc.wheel_separation", 0.13)
+        min_duty = self.cfg.get("dc.min_duty", 0.0)
 
         self._last_cmd_ms = _ticks_ms()
 
-        if abs(linear_x) < 0.001:
-            # Pure spin: opposite directions at full angular duty.
-            # Standard kinematics would yield only ~20 % duty here, which is
-            # often too weak to overcome static friction.
-            duty = _clamp(abs(angular_z) / (max_ang if max_ang > 0 else 1.0), 0.0, 1.0)
-            if angular_z > 0:      # CCW: left backward, right forward
-                self.left.drive(-duty)
-                self.right.drive(duty)
-            elif angular_z < 0:    # CW: left forward, right backward
-                self.left.drive(duty)
-                self.right.drive(-duty)
-            else:
-                self.left.stop()
-                self.right.stop()
-        else:
-            # Differential kinematics, normalised to drive units.
-            v_l = linear_x - angular_z * sep / 2.0
-            v_r = linear_x + angular_z * sep / 2.0
-            norm = max_lin + max_ang * sep / 2.0
-            if norm <= 0:
-                norm = 1.0
-            self.left.drive(_clamp(v_l / norm, -1.0, 1.0))
-            self.right.drive(_clamp(v_r / norm, -1.0, 1.0))
+        # Differential kinematics for every command, pure spin included, so the
+        # robot turns at the commanded rate (Nav2 relies on that). The former
+        # pure-spin special case drove |w|/max_angular as duty, which turned
+        # ~4x faster than commanded and made Nav2 overshoot and oscillate.
+        v_l = linear_x - angular_z * sep / 2.0
+        v_r = linear_x + angular_z * sep / 2.0
+        norm = max_lin + max_ang * sep / 2.0
+        if norm <= 0:
+            norm = 1.0
+        self.left.drive(_with_min_duty(_clamp(v_l / norm, -1.0, 1.0), min_duty))
+        self.right.drive(_with_min_duty(_clamp(v_r / norm, -1.0, 1.0), min_duty))
 
     def stop(self):
         """Coast both wheels.

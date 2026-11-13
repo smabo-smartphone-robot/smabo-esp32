@@ -1,30 +1,8 @@
-"""Orchestrator: wires subsystems together, handles the rosbridge protocol,
-and manages which modes are active.
+"""Orchestrator: wires subsystems together and manages which modes are active.
 
-WebSocket message protocol (rosbridge v2.0 compatible JSON), via smabo-brain:
-
-  inbound — robot operation (publish):
-    {"op":"publish","topic":"/cmd_vel",       "msg":{geometry_msgs/Twist}}
-    {"op":"publish","topic":"/servo/command", "msg":{trajectory_msgs/JointTrajectory}}
-
-  outbound:
-    {"op":"publish","topic":"/wheel_vel",    "msg":{left, right (m/s), dt (s)}}
-    {"op":"publish","topic":"/joint_states", "msg":{sensor_msgs/JointState}}
-    {"op":"set_config","config":{...}}       full config snapshot for brain's
-                                             odometry sync (see below)
-    {"op":"notice", "message":"..."}
-
-  Note: raw wheel velocities are published; smabo-brain integrates them
-  into nav_msgs/Odometry (so it can be fused with IMU/GPS).
-
-Config / mode are NOT handled over WebSocket — smabo-web sets them directly
-via the REST API in http_server.py (GET/POST /config, POST /mode).  After a
-change (and on each brain reconnect) the full config is pushed to smabo-brain
-over WebSocket so its odometry integrator stays in sync with the wheel
-geometry / covariance / frame names.
+Talking to the brain (topics, handshake, frame format) lives in brain_link.py;
+config / mode arrive over REST (http_server.py) and are applied here.
 """
-
-import json
 
 try:
     import uasyncio as asyncio
@@ -43,23 +21,8 @@ from random_motion import RandomMotion
 from dc_motors import DiffDrive
 from wheel_publisher import WheelPublisher
 from lidar_ld06 import Ld06
-
-# Topics advertised / subscribed when talking to smabo-brain-ros (rosbridge),
-# which—unlike the legacy relay—requires explicit advertise before publish and
-# subscribe to receive. Outbound carry the /esp32 source prefix (stripped by the
-# relay); inbound are canonical names.
-_ROSBRIDGE_ADVERTISE = (
-    ("/esp32/wheel_vel",    "smabo_interfaces/msg/WheelVel"),
-    ("/esp32/joint_states", "sensor_msgs/msg/JointState"),
-    ("/esp32/scan",         "sensor_msgs/msg/LaserScan"),
-    ("/esp32/pong",         "std_msgs/msg/String"),   # WS ping echo (see _on_publish)
-)
-_ROSBRIDGE_SUBSCRIBE = (
-    ("/cmd_vel",        "geometry_msgs/msg/Twist"),
-    ("/servo/command",  "trajectory_msgs/msg/JointTrajectory"),
-    ("/ping",           "std_msgs/msg/String"),       # WS ping request
-)
-
+from brain_link import BrainLink
+from pairing import take_secrets, without_secrets
 
 def _reboot_reasons(config_dict):
     """Find config keys in a patch that require a full hardware reboot.
@@ -89,10 +52,31 @@ def _reboot_reasons(config_dict):
     return reasons
 
 
+
+WIFI_PASSWORD_MASK = "****"
+
+
+def drop_masked_wifi_password(patch):
+    """Return ``patch`` without a ``wifi.password`` equal to the mask.
+
+    ``GET /config`` shows the password as ``"****"``; a client that sends the
+    settings back unchanged must not overwrite the real password with it.
+    """
+    wifi = patch.get("wifi")
+    if isinstance(wifi, dict) and wifi.get("password") == WIFI_PASSWORD_MASK:
+        wifi = dict(wifi)
+        del wifi["password"]
+        patch = dict(patch)
+        if wifi:
+            patch["wifi"] = wifi
+        else:
+            del patch["wifi"]
+    return patch
+
 class Robot:
     """Top-level orchestrator: owns subsystems, tasks, and message dispatch."""
 
-    def __init__(self, config, pca, ws):
+    def __init__(self, config, pca, ws, pairing=None):
         """Store dependencies and initialise empty subsystem/task state.
 
         Parameters
@@ -102,11 +86,16 @@ class Robot:
         pca : pca9685.PCA9685
             The servo PWM controller shared by all joints.
         ws : ws_client.WSClient
-            The WebSocket client to smabo-brain, used to send outbound messages.
+            The WebSocket client to the brain, used to send outbound messages.
+        pairing : pairing.Pairing, optional
+            Pairing with the brain: takes invites from REST, reports status.
         """
         self.cfg = config
         self.pca = pca
         self.ws = ws
+        self.pairing = pairing
+        self.link = BrainLink(ws)
+        self._protocol_warning = None   # last /brain/info mismatch (warn once)
 
         self.servo_group   = None   # JointGroup for all servos
         self.random_motion = None   # RandomMotion instance
@@ -121,77 +110,40 @@ class Robot:
     # helpers
     # ------------------------------------------------------------------ #
     def publish(self, topic, msg):
-        """Broadcast a rosbridge ``publish`` op to all clients.
-
-        Parameters
-        ----------
-        topic : str
-            ROS topic name.
-        msg : dict
-            The message payload matching the topic's type.
-
-        Returns
-        -------
-        None
-
-        Notes
-        -----
-        The source prefix ``/esp32`` is prepended so smabo-brain can identify
-        the origin and strip it before re-broadcasting under the canonical
-        topic name.
-        """
-        self.ws.broadcast(json.dumps({"op": "publish", "topic": "/esp32" + topic, "msg": msg}))
+        """Publish to the brain on the canonical ``topic`` (see brain_link.py)."""
+        self.link.publish(topic, msg)
 
     def _notice(self, message):
-        """Broadcast a ``notice`` op (informational message) to all clients.
-
-        Parameters
-        ----------
-        message : str
-            Human-readable notice text.
-
-        Returns
-        -------
-        None
-        """
-        self.ws.broadcast(json.dumps({"op": "notice", "message": message}))
+        """Send a human-readable notice to smabo-web via the brain."""
+        self.link.notice(message)
 
     def sync_config_to_brain(self):
-        """Push the full config to smabo-brain so its odometry stays in sync.
-
-        Config is otherwise set directly by smabo-web over REST (and never
-        flows through brain), but brain's odometry integrator needs the wheel
-        geometry / covariance / frame names.  Called on every brain (re)connect
-        and after each REST config/mode change.
-
-        Returns
-        -------
-        None
-        """
-        # rosbridge (smabo-brain-ros): odometry params come from the ROS launch,
-        # not from the ESP32, and ``set_config`` is not a rosbridge op — skip it.
-        if self.cfg.get("brain.rosbridge"):
-            return
-        self.ws.broadcast(json.dumps({"op": "set_config", "config": self.cfg.data}))
+        """Send the config snapshot to the brain (its odometry needs the wheel
+        geometry / covariance / frame names). Called on every brain (re)connect
+        and after each REST config/mode change."""
+        self.link.send_config(self.cfg.data)
 
     def on_brain_connect(self):
-        """Run once on every (re)connect to the brain/rosbridge endpoint.
+        """WSClient ``on_connect`` hook: advertise, subscribe, send config."""
+        self.link.handshake(self.cfg.data, self.config_url())
 
-        Legacy relay: push the config snapshot for odometry sync. rosbridge:
-        advertise outbound topics and subscribe to inbound ones (required before
-        publish/receive). Called from the WSClient ``on_connect`` hook.
+    def config_url(self):
+        """Our REST base URL (``http://<STA ip>:<http.port>``), or None offline."""
+        try:
+            import network
+            ip = network.WLAN(network.STA_IF).ifconfig()[0]
+        except Exception:
+            return None
+        if not ip or ip == "0.0.0.0":
+            return None
+        port = self.cfg.get("http.port", 80)
+        return "http://%s" % ip if port == 80 else "http://%s:%d" % (ip, port)
 
-        Returns
-        -------
-        None
-        """
-        if self.cfg.get("brain.rosbridge"):
-            for topic, typ in _ROSBRIDGE_ADVERTISE:
-                self.ws.broadcast(json.dumps({"op": "advertise", "topic": topic, "type": typ}))
-            for topic, typ in _ROSBRIDGE_SUBSCRIBE:
-                self.ws.broadcast(json.dumps({"op": "subscribe", "topic": topic, "type": typ}))
-        else:
-            self.sync_config_to_brain()
+    async def announce_config_url_task(self, interval=5.0):
+        """Repeat /config_url so a smabo-web that connects later still gets it."""
+        while True:
+            await asyncio.sleep(interval)
+            self.link.send_config_url(self.config_url())
 
     # ------------------------------------------------------------------ #
     # config / mode REST API (called by http_server.ConfigHTTPServer)
@@ -202,9 +154,22 @@ class Robot:
         Returns
         -------
         dict
-            The current configuration.
+            The current configuration, with ``wifi.password`` replaced by
+            ``"****"`` (write-only: never sent back out), without the pairing
+            secrets, and with ``brain.paired``.
         """
-        return self.cfg.data
+        data = without_secrets(self.cfg.data)
+        if self.pairing is not None:
+            brain = dict(data.get("brain") or {})
+            brain.update(self.pairing.status())
+            data["brain"] = brain
+        wifi = data.get("wifi")
+        if isinstance(wifi, dict) and "password" in wifi:
+            wifi = dict(wifi)
+            if wifi["password"]:
+                wifi["password"] = WIFI_PASSWORD_MASK
+            data["wifi"] = wifi
+        return data
 
     def set_config(self, patch):
         """Apply a config patch from REST, then resync brain (``POST /config``).
@@ -218,7 +183,19 @@ class Robot:
         -------
         None
         """
-        self._on_set_config(patch or {})
+        patch, invite = take_secrets(drop_masked_wifi_password(patch or {}))
+        brain = patch.get("brain")
+        if isinstance(brain, dict) and "paired" in brain:    # read-only status sent back
+            brain = dict(brain)
+            del brain["paired"]
+            brain.pop("refused", None)
+            patch["brain"] = brain
+        if invite and self.pairing is not None:
+            self.pairing.set_invite(invite)
+            self.ws.restart()                 # pair on the next connection
+        if not patch or patch == {"brain": {}}:
+            return
+        self._on_set_config(patch)
         self.sync_config_to_brain()
 
     def set_mode(self, partial):
@@ -603,32 +580,11 @@ class Robot:
     # inbound message handling
     # ------------------------------------------------------------------ #
     def on_message(self, _client, text):
-        """Parse one inbound WebSocket frame and dispatch it by its ``op`` field.
-
-        Only real-time ``publish`` ops are handled here; config and mode are
-        set out-of-band via the REST API (see http_server.py).  Invalid JSON
-        and unknown ops are ignored.
-
-        Parameters
-        ----------
-        _client : asyncio.StreamWriter
-            The originating client (unused; replies are broadcast).
-        text : str
-            The raw JSON text of the inbound frame.
-
-        Returns
-        -------
-        None
-        """
-        try:
-            data = json.loads(text)
-        except ValueError:
-            return
-        op = data.get("op")
-        if op == "publish":
-            self._on_publish(data.get("topic"), data.get("msg") or {})
-        elif op in ("subscribe", "advertise", "unsubscribe"):
-            pass
+        """Handle one inbound WebSocket frame: only ``publish`` ops are used
+        (config and mode come over REST); anything else is ignored."""
+        parsed = BrainLink.parse(text)
+        if parsed is not None:
+            self._on_publish(*parsed)
 
     def _merged_modes(self, partial):
         """Overlay a partial mode update onto the current modes.
@@ -709,6 +665,13 @@ class Robot:
                          for n, a in self.servo_group.final_angles(names, points).items()}
                 if patch:
                     self.cfg.update({"servos": {"joints": patch}})
+
+        elif topic == "/brain/info":
+            warning = self.link.check_brain_info(msg)
+            if warning and warning != self._protocol_warning:
+                print(warning)
+                self.link.notice(warning)       # shown in smabo-web
+            self._protocol_warning = warning
 
         elif topic == "/ping":
             # Application-level echo so smabo-web can measure end-to-end WS

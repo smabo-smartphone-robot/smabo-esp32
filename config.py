@@ -79,18 +79,28 @@ DEFAULTS = {
         "password": "your-password",
         "hostname": "esp32-robot",
     },
+    # Wi-Fi setup over Bluetooth (improv.py): advertised only while Wi-Fi is
+    # down at boot. name defaults to "smabo-" + wifi.hostname.
+    "improv": {
+        "enabled": True,
+        "name": "",
+    },
     # smabo-brain relay server / smabo-brain-ros rosbridge to connect to
     "brain": {
         "host": "192.168.1.100",
         "port": 9090,
-        # rosbridge=True targets smabo-brain-ros (rosbridge_suite): it serves at
-        # path "/" and requires advertise/subscribe before pub/sub. False targets
-        # the legacy smabo-brain relay (path "/esp32", bare publish). Port 9090
-        # is the same for both.
-        "rosbridge": False,
-        # WebSocket path. "" auto-selects: "/" for rosbridge, "/esp32" for relay.
+        # WebSocket path. "" = "/", where both smabo-brain and smabo-brain-ros
+        # accept the rosbridge handshake, so nothing here depends on which
+        # brain is running. (An old "rosbridge" key in config.json is ignored.)
         "path": "",
+        # Pairing (pairing.py): the token the brain issued, and a one-time
+        # invite code waiting to be used. Never shown over REST.
+        "token": "",
+        "invite": "",
     },
+    # REST API (http_server.py). Once paired it answers only the brain, which
+    # proves itself with the relay key; only the key's SHA-256 is kept here.
+    "http": {"port": 80, "relay_key_sha256": ""},
     "i2c": {"sda": 21, "scl": 22, "freq": 400000},  # classic ESP32 default
     "pca9685": {"address": 0x40, "freq": 50},
 
@@ -150,6 +160,7 @@ DEFAULTS = {
         "max_angular": 1.50,       # rad/s mapped to full duty
         "wheel_radius": 0.030,     # m
         "wheel_separation": 0.130,  # m (track width, centre to centre of the tyres)
+        "min_duty": 0.0,           # static-friction floor for any non-zero wheel duty (0 = off)
         "invert_left": False,
         "invert_right": False,
         "cmd_timeout": 0.5,        # s; stop motors if no cmd_vel within this

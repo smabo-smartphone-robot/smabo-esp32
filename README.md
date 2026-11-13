@@ -4,7 +4,7 @@ ESP32用ロボットファームウェア（MicroPython製）。
 
 中継サーバ（smabo-brain）へWebSocketクライアントとして接続し、JSON命令を受け取って走行・サーボを制御します。エンコーダのホイール速度を送信し、オドメトリの積分は smabo-brain 側で行います。
 
-設定（config / mode）は WebSocket ではなく、ESP32 が直接公開する **REST API** で smabo-web から読み書きします（`http_server.py`）。リアルタイム制御・テレメトリは従来どおり smabo-brain 経由の WebSocket です。
+設定（config / mode）は WebSocket ではなく、ESP32 が公開する **REST API** で読み書きします（`http_server.py`）。smabo-web は smabo-brain を通して送ります（smabo-brain-ros では直接）。リアルタイム制御・テレメトリは従来どおり smabo-brain 経由の WebSocket です。
 
 
 
@@ -70,6 +70,15 @@ mpremote connect /dev/ttyUSB0 repl
 ```
 
 
+### Wi-Fi を Bluetooth で設定する（Improv）
+
+起動時に Wi-Fi へつながらないと、ESP32 は Bluetooth で `smabo-<hostname>` という名前を出して待ちます。smabo-web の設定画面（または smabo-esp32 のテンプレート）にある「ESP32 Wi-Fi setup over Bluetooth」で **Find ESP32** を押し、SSID とパスワードを送ると、ESP32 がつないでみて、成功したら `config.json` に保存し、設定 API の URL を返します。smabo-web はその URL を ESP32 のホストに設定します。
+
+- [Improv Wi-Fi](https://www.improv-wifi.com/ble/) の BLE 版なので、他の Improv 対応ツールからも設定できます。
+- ブラウザは Chrome か Edge で、ページを `https://` か `http://localhost` で開いたときだけ使えます（Web Bluetooth の制限）。
+- Bluetooth を出すのは Wi-Fi につながらないときだけです。設定が済むと 10 秒後に止めます。つながっている ESP32 の Wi-Fi は Bluetooth からは変えられません（設定 API か `config.json` で変えます）。
+- Wi-Fi につながらない間は、近くの誰でも Wi-Fi 設定を送れます。気になる場合は `"improv": {"enabled": false}` で止めます。
+
 ## モジュール構成
 
 | ファイル | 役割 |
@@ -77,9 +86,13 @@ mpremote connect /dev/ttyUSB0 repl
 | `main.py` | 起動エントリ・asyncio イベントループ |
 | `config.py` | 永続設定（RAM + config.json、デバウンス保存） |
 | `wifi_manager.py` | WiFi 接続・自動再接続 |
+| `improv.py` | Wi-Fi につながらないときの Bluetooth 設定（Improv Wi-Fi） |
 | `ws_client.py` | RFC 6455 WebSocket クライアント（smabo-brainへ接続・自動再接続、外部ライブラリ不要） |
-| `http_server.py` | config/mode の REST API サーバ（smabo-web が直接アクセス、CORS 対応） |
-| `robot.py` | オーケストレータ（rosbridgeプロトコル・モード管理） |
+| `http_server.py` | config/mode の REST API サーバ（ペアリング後は brain の中継用の鍵がある要求だけ） |
+| `pairing.py` | brain とのペアリング（token・招待コード・中継用の鍵の確認） |
+| `robot.py` | オーケストレータ（サブシステムの起動停止・モード管理・受信指令の処理） |
+| `brain_link.py` | brain との通信（advertise / subscribe・publish・受信フレームの解釈） |
+| `protocol_gen.py` | トピック表とプロトコル番号（smabo-protocol の `gen.py` が生成。手で直さない） |
 | `pca9685.py` | PCA9685 PWM ドライバ（サーボ用 I2C） |
 | `servo_controller.py` | JointGroup（全サーボ共通） |
 | `random_motion.py` | グループ単位のランダム動作 |
@@ -102,7 +115,21 @@ mpremote connect /dev/ttyUSB0 repl
 
 ## 通信プロトコル
 
-起動時に smabo-brain（`ws://<brain-host>:<port>/esp32`、接続先は `config.json` の `brain` で指定）へクライアントとして接続し、JSON送受信します。フォーマットはrosbridgeの v2.0 互換。認証なし（信頼済みLAN内利用前提）。
+起動時に brain（`ws://<brain-host>:<port>/`、接続先は `config.json` の `brain` で指定）へクライアントとして接続し、JSON送受信します。フォーマットはrosbridgeの v2.0 互換。
+
+### brain とのペアリング
+
+smabo-brain はペアリングした機器だけを受け付けます（`pairing.py`）。
+
+1. smabo-web の「Devices」→「Add ESP32」で招待コードを出す
+2. ESP32 に届ける。Bluetooth の Wi-Fi 設定（Improv）を smabo-web から行うと、brain の場所と招待コードも一緒に送られます。Wi-Fi につながっていてペアリング前なら、招待ボックスから ESP32 のアドレスに送るか、`POST /config {"brain": {"invite": "ABCD-EFGH"}}` を送ります
+3. ESP32 は次の接続でコードを見せ、brain から token と中継用の鍵を受け取ります。token は `config.json` の `brain.token` に、鍵は SHA-256 だけを `http.relay_key_sha256` に保存します
+
+接続のたびに、最初のフレームで token を見せます（`{"op": "auth", "token": …}`）。ペアリング後の REST API は、brain が付ける中継用の鍵（`X-Smabo-Relay-Key`）のない要求を 401 で断り、CORS も返しません。smabo-web の設定は brain の `/devices/esp32/…` を通ります。token・招待コード・鍵のハッシュは、`GET /config` にも `/config` トピックにも出しません（代わりに `brain.paired` を返します）。
+
+smabo-web で外す（または brain を `--reset-pairing` で初期化する）と、brain に断られた時点で ESP32 はペアリングを忘れ、また招待コードを受け付けます。ペアリングなし（既定。`--pairing` なし）の brain は「ペアリングしない」とすぐ答えるので、そのままつなぎます。smabo-brain-ros は token に答えないので、2 秒待ってから従来どおりつなぎます。
+
+brain は smabo-brain でも smabo-brain-ros でも同じ手順なので、どちらを使うかの設定はありません。接続のたびに、送信トピックを **advertise**、受信トピックを **subscribe** してから config スナップショットを送ります。送信トピックには送信元 prefix `/esp32` が付き、brain が剥がします。実装は `brain_link.py` です。
 
 主なトピック:
 
@@ -110,15 +137,18 @@ mpremote connect /dev/ttyUSB0 repl
 |------|---------|------|
 | 受信 | `/cmd_vel` | 走行速度指令 |
 | 受信 | `/servo/command` | サーボ軌道指令 |
+| 受信 | `/ping` | 疎通確認（受信した `data` をそのまま `/pong` で返す） |
+| 送信 | `/pong` | `/ping` への応答（smabo-web の WebSocket 疎通確認用） |
 | 送信 | `/wheel_vel` | ホイール速度（left/right m/s, dt）。オドメトリ積分は smabo-brain 側 |
 | 送信 | `/joint_states` | 関節角度 |
 | 送信 | `/scan` | LD06 ライダのスキャン（`modes.lidar` 有効時）。Nav2 のセンサ入力 |
-| 送信 | `set_config` | 全 config スナップショット。smabo-brain のオドメトリ同期用（下記参照。rosbridge モードでは送信しない） |
+| 送信 | `/config` | config スナップショット（std_msgs/String の data に JSON。Wi-Fi 設定は除く）。smabo-brain のオドメトリ同期用（下記参照） |
 
-### 設定 REST API（smabo-web ↔ ESP32 直通）
+### 設定 REST API
 
-config / mode は smabo-brain を介さず、ESP32 の HTTP サーバ（既定 `:80`、CORS 全許可）に
-smabo-web から直接アクセスします。
+config / mode は ESP32 の HTTP サーバ（既定 `:80`）にあります。smabo-web は brain の
+`/devices/esp32/…` を通して読み書きします（brain が中継用の鍵を付けて転送）。
+ペアリング前と、ペアリングなし（既定）の brain につながっている間は、誰からの要求も受け付けます（CORS 全許可。ペアリング前の招待コードや smabo-brain-ros のときは、smabo-web が直接送ります）。ペアリング済みでも、ペアリングなしの brain につながっている間は同じです。
 
 | メソッド | パス | 内容 |
 |----------|------|------|
@@ -127,27 +157,16 @@ smabo-web から直接アクセスします。
 | `POST` | `/mode`   | サブシステムの有効/無効（servos / dc_drive / encoder_drive / lidar） |
 
 smabo-brain のオドメトリ積分は車輪ジオメトリ・共分散・frame 名を必要とするため、
-ESP32 は brain への接続時および config/mode 変更時に、全 config を WebSocket で
-`{"op":"set_config","config":{…}}` として brain に push します（brain 内部の odom 同期専用）。
+ESP32 は brain への接続時および config/mode 変更時に、config を `/esp32/config` で
+brain に送ります（brain 内部の odom 同期専用。web へは流れません）。
 
 
-## smabo-brain-ros（rosbridge）連携
+## smabo-brain-ros（ROS 2）連携
 
 ROS 2 スタック（[smabo-brain-ros](https://github.com/smabo-smartphone-robot/smabo-brain-ros)：
-rosbridge_suite + Nav2 + MoveIt2）に接続する場合は `config.json` で次を設定します。
-
-```json
-{ "brain": { "host": "<ros-host>", "port": 9090, "rosbridge": true } }
-```
-
-- 接続先パスは rosbridge の `"/"`（レガシー smabo-brain は `"/esp32"`）。`brain.path` で上書き可。
-- rosbridge は publish 前の **advertise** と受信のための **subscribe** を要求するため、
-  ESP32 は接続時に送信トピック（`/esp32/wheel_vel`・`/esp32/joint_states`・`/esp32/scan`）を
-  advertise し、受信トピック（`/cmd_vel`・`/servo/command`）を subscribe します。
-- rosbridge モードでは `set_config` を送りません（オドメトリのパラメータは ROS 側の launch で
-  与えるため）。送信元 prefix `/esp32` は ROS 側の relay が剥がします。
-
-`rosbridge:false`（既定）ならレガシー smabo-brain への従来動作のままです。
+rosbridge_suite + Nav2 + MoveIt2）につなぐ場合も、`brain.host` をそのマシンにするだけで、
+ほかの設定は要りません。送信元 prefix `/esp32` は ROS 側の relay が剥がします。
+古い `config.json` に残っている `brain.rosbridge` は無視されます。
 
 ### LD06 ライダ（`modes.lidar`）
 
@@ -166,5 +185,16 @@ LD06 ライダをマイコンの UART に直結（ライダ TX → MCU RX）し�
 有効化は REST（`POST /mode {"lidar": true}`）か `config.json` の `modes.lidar`。
 UART ピン変更は再起動せずホットリロードします。
 
+## テスト
 
+ESP32 がなくても、PC の Python でモーターの計算・設定の読み書き・停止タイマーを確かめられます。`machine` モジュールは `tests/conftest.py` の偽物に置き換わります。
 
+```bash
+pip install pytest
+python -m pytest tests
+```
+
+## バージョンと互換性
+
+ほかの smabo リポジトリとは、同じ minor 番号（`0.2.x` など）どうしで組み合わせます。対応表は
+[smabo-brain の README](https://github.com/smabo-smartphone-robot/smabo-brain#バージョンと互換性) にあります。
