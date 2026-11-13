@@ -81,9 +81,9 @@ class Ld06:
             print("LD06: machine.UART unavailable (off-target); idling")
             return None
         try:
-            uart_id = self.cfg.get("lidar.uart", 1)
-            rx = self.cfg.get("lidar.rx", 20)
-            tx = self.cfg.get("lidar.tx", -1)
+            uart_id = self.cfg.get("lidar.uart", 2)
+            rx = self.cfg.get("lidar.rx", 4)
+            tx = self.cfg.get("lidar.tx", 0)
             baud = self.cfg.get("lidar.baud", 230400)
             kwargs = dict(baudrate=baud, bits=8, parity=None, stop=1,
                           rx=Pin(rx), rxbuf=1024, timeout=0)
