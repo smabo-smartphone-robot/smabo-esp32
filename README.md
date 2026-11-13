@@ -10,7 +10,7 @@ ESP32用ロボットファームウェア（MicroPython製）。
 
 ## 動作環境
 
-- ESP32（DevKit / S3 / XIAO ESP32S3）
+- ESP32（DevKit / S3）
 - MicroPython v1.22 以降
 - 接続機器: PCA9685（サーボ）、TB6612FNG（DCモータ）
 
@@ -110,7 +110,6 @@ mpremote connect /dev/ttyUSB0 repl
 |---------|-----------|
 | `config.esp32-classic.json` | ESP32 DevKit（38ピン標準） |
 | `config.esp32s3-devkitc1.json` | ESP32-S3 DevKitC-1 |
-| `config.xiao-esp32s3.json` | Seeed XIAO ESP32S3 |
 
 
 ## 通信プロトコル

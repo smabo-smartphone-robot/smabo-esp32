@@ -101,7 +101,9 @@ DEFAULTS = {
     # REST API (http_server.py). Once paired it answers only the brain, which
     # proves itself with the relay key; only the key's SHA-256 is kept here.
     "http": {"port": 80, "relay_key_sha256": ""},
-    "i2c": {"sda": 21, "scl": 22, "freq": 400000},  # classic ESP32 default
+    # Classic ESP32 DevKitC: adjacent pads 18/5 on the right header (the
+    # 23/22/21/19 run next to it is taken by the wheel encoders).
+    "i2c": {"sda": 18, "scl": 5, "freq": 400000},
     "pca9685": {"address": 0x40, "freq": 50},
 
     # Which subsystems are active. Multiple may run at once, EXCEPT
@@ -148,7 +150,7 @@ DEFAULTS = {
         # breakout's physical order:
         #   GPIO 32=PWMA, 33=AIN2, 25=AIN1, 26=STBY, 27=BIN1, 14=BIN2, 12=PWMB
         # Input-only pins (34/35/36/39) are avoided since motor outputs need
-        # drive capability. For ESP32-S3 / XIAO boards apply a config.json from
+        # drive capability. For ESP32-S3 boards apply a config.json from
         # configs/ instead.
         "pins": {
             "pwma": 32, "ain2": 33, "ain1": 25,
@@ -167,8 +169,11 @@ DEFAULTS = {
     },
 
     "encoder": {
-        "left": {"a": 34, "b": 35},
-        "right": {"a": 36, "b": 39},
+        # Classic ESP32 DevKitC: the four GPIOs next to TX/RX on the right
+        # header (23, 22, 21, 19), so one ribbon of jumper wires reaches both
+        # encoders. For ESP32-S3 apply a config.json from configs/ instead.
+        "left": {"a": 19, "b": 21},
+        "right": {"a": 22, "b": 23},
         "cpr": 1440,               # encoder counts per *wheel* revolution
         "publish_rate": 20.0,      # Hz for /odom
         "odom_frame": "odom",
