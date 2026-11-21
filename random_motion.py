@@ -55,7 +55,7 @@ class RandomMotion:
         str
             Either ``"manual"`` or ``"random"``.
         """
-        return self.cfg.get("servos.behavior", "manual")
+        return self.cfg.get("servos.behavior")
 
     def _group_cfg(self, name):
         """Look up the live config for a named random group.

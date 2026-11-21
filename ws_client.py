@@ -6,6 +6,14 @@ Exposes broadcast() so Robot is unchanged from the WSServer era.
 
 Client→server frames MUST be masked (RFC 6455 §5.3);
 server→client frames are unmasked.
+
+Outgoing frames go through one queue that a single sender task writes out, so
+only one drain() ever waits on the socket. When the link is slower than what
+we publish (e.g. /scan over weak Wi-Fi), new frames are dropped once
+_MAX_QUEUED bytes are waiting, instead of piling up. A send error ends the
+connection and the client reconnects. Frames sent with a ``key`` (e.g. /scan)
+are "latest only": a newer one replaces the one still waiting, so a stream of
+big frames never holds more than one of them ahead of pongs and the rest.
 """
 
 import binascii
@@ -17,29 +25,85 @@ try:
 except ImportError:
     import asyncio
 
+# bytes allowed to wait for the socket; newer frames are dropped beyond this
+# (about two /scan frames: the ESP32 has little RAM to spare)
+_MAX_QUEUED = 6144
+
+# a socket that takes longer than this to accept a frame is treated as dead
+# and the connection is rebuilt
+_SEND_TIMEOUT_S = 5
+
 
 def _mask_frame(payload, opcode=0x1):
-    """Build a single masked client-to-server frame."""
-    data = payload.encode() if isinstance(payload, str) else bytes(payload)
-    n = len(data)
-    mask = os.urandom(4)
-    masked = bytes(data[i] ^ mask[i % 4] for i in range(n))
+    """Build a single masked client-to-server frame (one allocation).
 
-    frame = bytearray()
-    frame.append(0x80 | opcode)   # FIN + opcode
+    ``payload`` is text, bytes, or a tuple of byte chunks sent as one message.
+    """
+    if isinstance(payload, str):
+        payload = payload.encode()
+    parts = payload if isinstance(payload, tuple) else (payload,)
+    n = 0
+    for part in parts:
+        n += len(part)
     if n < 126:
-        frame.append(0x80 | n)    # MASK bit + 7-bit length
+        head = bytes((0x80 | opcode, 0x80 | n))          # FIN + opcode, MASK + 7-bit length
     elif n < 65536:
-        frame.append(0x80 | 126)
-        frame.append((n >> 8) & 0xFF)
-        frame.append(n & 0xFF)
+        head = bytes((0x80 | opcode, 0x80 | 126, (n >> 8) & 0xFF, n & 0xFF))
     else:
-        frame.append(0x80 | 127)
-        for shift in range(56, -1, -8):
-            frame.append((n >> shift) & 0xFF)
-    frame.extend(mask)
-    frame.extend(masked)
+        head = bytes([0x80 | opcode, 0x80 | 127] + [(n >> s) & 0xFF for s in range(56, -1, -8)])
+    mask = os.urandom(4)
+    h = len(head) + 4
+    frame = bytearray(h + n)
+    frame[:len(head)] = head
+    frame[len(head):h] = mask
+    p = h
+    for part in parts:
+        frame[p:p + len(part)] = part
+        p += len(part)
+    payload = parts = None                               # free the text before masking
+    global _mask
+    if _mask is None:
+        _mask = _pick_mask()
+    _mask(frame, mask, h)
     return frame
+
+
+def _apply_mask(buf, mask, start=0):
+    """XOR ``buf[start:]`` in place with the repeating 4-byte ``mask``."""
+    m0, m1, m2, m3 = mask[0], mask[1], mask[2], mask[3]
+    n = len(buf)
+    i = start
+    while i + 4 <= n:
+        buf[i] ^= m0
+        buf[i + 1] ^= m1
+        buf[i + 2] ^= m2
+        buf[i + 3] ^= m3
+        i += 4
+    k = 0
+    while i < n:
+        buf[i] ^= mask[k]
+        i += 1
+        k += 1
+    return buf
+
+
+def _pick_mask():
+    """fastpath.mask (native code) if it loads and matches _apply_mask, else _apply_mask."""
+    try:
+        import fastpath
+        m = b"\x12\x34\xab\xcd"
+        a = bytearray(range(7, 7 + 23))
+        b = bytearray(a)
+        fastpath.mask(a, 2, len(a), m)
+        _apply_mask(b, m, 2)
+        if a == b:
+            return lambda buf, mask, start=0: fastpath.mask(buf, start, len(buf), mask)
+    except Exception:
+        pass
+    return _apply_mask
+
+
+_mask = None
 
 
 class WSClient:
@@ -61,6 +125,11 @@ class WSClient:
         self.pairing = pairing
         self._writer = None
         self._refused = False
+        self._queue = []          # masked frames waiting for the sender task
+        self._queued = 0          # their total size in bytes
+        self._latest = {}         # key -> its frame still waiting in _queue
+        self._wake = asyncio.Event()
+        self.dropped = 0          # frames dropped because the link was busy
 
     def restart(self):
         """Drop the connection so the next attempt uses new settings (e.g. an invite)."""
@@ -75,18 +144,80 @@ class WSClient:
     # ------------------------------------------------------------------ #
     # Public API (matches WSServer interface used by Robot)
     # ------------------------------------------------------------------ #
-    def broadcast(self, text):
-        """Send text to brain (mirrors WSServer.broadcast)."""
-        self._send(text)
+    def broadcast(self, text, key=None):
+        """Send text to brain (mirrors WSServer.broadcast).
 
-    def _send(self, text):
+        With ``key``, only the newest frame of that key waits to be sent: one
+        still in the queue is replaced (used for /scan).
+        """
+        self._send(text, key)
+
+    def _send(self, text, key=None):
         if self._writer is None:
             return
+        if key is not None:
+            old = self._latest.pop(key, None)
+            if old is not None:
+                q = self._queue
+                for idx in range(len(q)):
+                    if q[idx] is old:
+                        del q[idx]
+                        self._queued -= len(old)
+                        break
+                old = None
+        # check the room first, so a busy link costs no frame building
+        size = sum(len(p) for p in text) if isinstance(text, tuple) else len(text)
+        if self._queued + size + 14 > _MAX_QUEUED:
+            self._drop()
+            return
         try:
-            self._writer.write(_mask_frame(text))
-            asyncio.create_task(self._drain())
-        except Exception:
-            self._writer = None
+            frame = _mask_frame(text)
+        except MemoryError:
+            self._drop()
+            return
+        if self._enqueue(frame) and key is not None:
+            self._latest[key] = frame
+
+    def _drop(self):
+        self.dropped += 1
+        if self.dropped == 1 or self.dropped % 100 == 0:
+            print("WSClient: link busy, dropped %d frames" % self.dropped)
+
+    def _enqueue(self, frame, force=False):
+        """Queue a frame for the sender task (dropped if the link is backed up)."""
+        if not force and self._queued + len(frame) > _MAX_QUEUED:
+            self._drop()
+            return False
+        self._queue.append(frame)
+        self._queued += len(frame)
+        self._wake.set()
+        return True
+
+    async def _send_loop(self, writer):
+        """The only task that writes to the socket after the HTTP upgrade."""
+        while True:
+            while not self._queue:
+                self._wake.clear()
+                await self._wake.wait()
+            frame = self._queue.pop(0)
+            self._queued -= len(frame)
+            if self._latest:
+                for k in self._latest:
+                    if self._latest[k] is frame:
+                        del self._latest[k]
+                        break
+            writer.write(frame)
+            frame = None
+            await asyncio.wait_for(writer.drain(), _SEND_TIMEOUT_S)
+
+    async def _guard(self, coro, done):
+        """Run a connection task; whichever ends first ends the connection."""
+        try:
+            await coro
+        except Exception as e:
+            print("WSClient error:", e)
+        finally:
+            done.set()
 
     # ------------------------------------------------------------------ #
     # Connection lifecycle
@@ -106,6 +237,11 @@ class WSClient:
 
     async def _connect_and_run(self):
         reader, writer = await asyncio.open_connection(self.host, self.port)
+        self._queue = []
+        self._queued = 0
+        self._latest = {}
+        done = asyncio.Event()
+        tasks = [asyncio.create_task(self._guard(self._send_loop(writer), done))]
         try:
             await self._handshake(reader, writer)
             self._writer = writer
@@ -121,9 +257,12 @@ class WSClient:
                         await res
                 except Exception as e:
                     print("WSClient on_connect error:", e)
-            await self._read_loop(reader, writer)
+            tasks.append(asyncio.create_task(self._guard(self._read_loop(reader, writer), done)))
+            await done.wait()
         finally:
             self._writer = None
+            for t in tasks:
+                t.cancel()
             try:
                 await writer.aclose()
             except Exception:
@@ -168,8 +307,7 @@ class WSClient:
         first = self.pairing.first_frame() if self.pairing is not None else None
         if first is None:
             return True
-        writer.write(_mask_frame(json.dumps(first)))
-        await writer.drain()
+        self._enqueue(_mask_frame(json.dumps(first)), force=True)
         try:
             opcode, payload = await asyncio.wait_for(self._read_frame(reader, writer), 2)
         except asyncio.TimeoutError:
@@ -187,13 +325,6 @@ class WSClient:
                 await res
             return True
         return ok
-
-    async def _drain(self):
-        try:
-            if self._writer:
-                await self._writer.drain()
-        except Exception:
-            self._writer = None
 
     async def _read_exact(self, reader, n):
         buf = b""
@@ -243,11 +374,10 @@ class WSClient:
                 payload = bytes(payload[i] ^ mask[i % 4] for i in range(length))
 
             if opcode == 0x8:                       # close
-                writer.write(_mask_frame(b"", 0x8))
-                await writer.drain()
+                self._enqueue(_mask_frame(b"", 0x8), force=True)
+                await asyncio.sleep(0.05)           # let the sender flush it
                 return None, b""
             elif opcode == 0x9:                     # ping → pong
-                writer.write(_mask_frame(payload, 0xA))
-                await writer.drain()
+                self._enqueue(_mask_frame(payload, 0xA), force=True)
             elif opcode in (0x1, 0x2):              # text / binary
                 return opcode, payload

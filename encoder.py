@@ -21,8 +21,17 @@ def _input(pin):
         return Pin(pin, Pin.IN)
 
 
+# Count step for (previous AB << 2) | current AB, AB = (A << 1) | B.
+# Forward: 11→01, 01→00, 00→10, 10→11 (+1); the reverse order counts -1.
+# No change, or both channels changing at once, counts 0.
+_STEP = (0, -1, 1, 0,
+         1, 0, 0, -1,
+         -1, 0, 0, 1,
+         0, 1, -1, 0)
+
+
 class QuadEncoder:
-    """Software x4 quadrature decoder driven by GPIO edge interrupts."""
+    """Software x4 quadrature decoder driven by GPIO edge interrupts (state table)."""
 
     def __init__(self, pin_a, pin_b):
         """Attach edge interrupt handlers to the A and B channel pins.
@@ -37,31 +46,19 @@ class QuadEncoder:
         self._count = 0
         self._a = _input(pin_a)
         self._b = _input(pin_b)
-        self._a.irq(trigger=Pin.IRQ_RISING | Pin.IRQ_FALLING, handler=self._on_a)
-        self._b.irq(trigger=Pin.IRQ_RISING | Pin.IRQ_FALLING, handler=self._on_b)
+        self._prev = self._state()
+        self._a.irq(trigger=Pin.IRQ_RISING | Pin.IRQ_FALLING, handler=self._on_edge)
+        self._b.irq(trigger=Pin.IRQ_RISING | Pin.IRQ_FALLING, handler=self._on_edge)
 
-    def _on_a(self, _pin):
-        """Handle an edge on channel A, incrementing/decrementing the count.
+    def _state(self):
+        """Return the current A/B levels packed as ``(A << 1) | B``."""
+        return (self._a.value() << 1) | self._b.value()
 
-        Parameters
-        ----------
-        _pin : machine.Pin
-            The triggering pin (supplied by the IRQ, unused).
+    def _on_edge(self, _pin):
+        """Handle an edge on either channel: step the count from the state change.
 
-        Returns
-        -------
-        None
-        """
-        a = self._a.value()
-        b = self._b.value()
-        # standard x4-ish decode
-        if a != b:
-            self._count += 1
-        else:
-            self._count -= 1
-
-    def _on_b(self, _pin):
-        """Handle an edge on channel B, incrementing/decrementing the count.
+        The previous and current A/B states index ``_STEP``; a change that is
+        not one quadrature step (noise, contact bounce, a missed edge) counts 0.
 
         Parameters
         ----------
@@ -72,12 +69,9 @@ class QuadEncoder:
         -------
         None
         """
-        a = self._a.value()
-        b = self._b.value()
-        if a == b:
-            self._count += 1
-        else:
-            self._count -= 1
+        cur = self._state()
+        self._count += _STEP[(self._prev << 2) | cur]
+        self._prev = cur
 
     def read_and_reset(self):
         """Return the count accumulated since the last call and zero it.

@@ -103,6 +103,7 @@ class Robot:
         self.encoders      = None
         self.wheel_pub     = None
         self.lidar         = None   # Ld06 → /scan
+        self._drive_mode   = None   # "encoder" | "dc" | None: what apply_modes last started
 
         self._tasks = {}
 
@@ -136,7 +137,7 @@ class Robot:
             return None
         if not ip or ip == "0.0.0.0":
             return None
-        port = self.cfg.get("http.port", 80)
+        port = self.cfg.get("http.port")
         return "http://%s" % ip if port == 80 else "http://%s:%d" % (ip, port)
 
     async def announce_config_url_task(self, interval=5.0):
@@ -353,6 +354,8 @@ class Robot:
         """
         if self.drive is None:
             self.drive = DiffDrive(self.cfg)
+        # encoder_drive regulates wheel speed from the encoders; dc_drive is open loop
+        self.drive.set_closed_loop(with_encoder)
         self._spawn("drive_wd", self.drive.watchdog_task())
         if with_encoder:
             from encoder import QuadEncoder
@@ -361,7 +364,8 @@ class Robot:
                 er = self.cfg.get("encoder.right")
                 self.encoders  = (QuadEncoder(el["a"], el["b"]),
                                   QuadEncoder(er["a"], er["b"]))
-                self.wheel_pub = WheelPublisher(self.cfg, self.encoders[0], self.encoders[1])
+                self.wheel_pub = WheelPublisher(self.cfg, self.encoders[0], self.encoders[1],
+                                                self.drive.update_speed)
             self._spawn("odom", self.wheel_pub.run(self.publish))
 
     def disable_drive(self):
@@ -426,14 +430,15 @@ class Robot:
         self.enable_servos(modes.get("servos", False))
         self.enable_lidar(modes.get("lidar", False))
 
-        if modes.get("encoder_drive"):
+        # Restart the drive only when its mode changes, so toggling servos or
+        # the lidar does not stop a robot that is driving.
+        drive_mode = ("encoder" if modes.get("encoder_drive")
+                      else "dc" if modes.get("dc_drive") else None)
+        if drive_mode != self._drive_mode:
             self.disable_drive()
-            self.enable_drive(with_encoder=True)
-        elif modes.get("dc_drive"):
-            self._kill("odom")
-            self.enable_drive(with_encoder=False)
-        else:
-            self.disable_drive()
+            if drive_mode is not None:
+                self.enable_drive(with_encoder=(drive_mode == "encoder"))
+            self._drive_mode = drive_mode
 
         self.cfg.update({"modes": modes})
 
@@ -535,7 +540,7 @@ class Robot:
             Never returns (cancelled when the servo subsystem restarts).
         """
         while True:
-            rate = self.cfg.get("servos.joint_states_rate", 20.0)
+            rate = self.cfg.get("servos.joint_states_rate")
             if rate > 0 and self.servo_group is not None:
                 state  = self.servo_group.get_state()   # {name: rad}
                 now_ms = _ticks_ms()

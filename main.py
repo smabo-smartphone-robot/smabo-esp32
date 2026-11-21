@@ -34,12 +34,12 @@ async def amain():
     # I2C bus + PCA9685 servo PWM controller (shared by all joints).
     try:
         i2c = I2C(0,
-                  scl=Pin(cfg.get("i2c.scl", 22)),
-                  sda=Pin(cfg.get("i2c.sda", 21)),
-                  freq=cfg.get("i2c.freq", 400000))
+                  scl=Pin(cfg.get("i2c.scl")),
+                  sda=Pin(cfg.get("i2c.sda")),
+                  freq=cfg.get("i2c.freq"))
         pca = PCA9685(i2c,
-                      address=cfg.get("pca9685.address", 0x40),
-                      freq=cfg.get("pca9685.freq", 50))
+                      address=cfg.get("pca9685.address"),
+                      freq=cfg.get("pca9685.freq"))
     except (OSError, ValueError) as e:
         print("PCA9685: 未接続のためサーボ機能を無効化します ({})".format(e))
         pca = None
@@ -59,8 +59,8 @@ async def amain():
     ws_path = cfg.get("brain.path") or "/"
     pairing = Pairing(cfg, name=cfg.get("wifi.hostname") or "smabo-esp32")
     ws = WSClient(
-        host=cfg.get("brain.host", "192.168.1.100"),
-        port=cfg.get("brain.port", 9090),
+        host=cfg.get("brain.host"),
+        port=cfg.get("brain.port"),
         path=ws_path,
         on_message=on_message,
         on_connect=on_connect,
@@ -77,7 +77,7 @@ async def amain():
     improv.start(cfg, sta, brain_moved)
 
     asyncio.create_task(ws.run())
-    asyncio.create_task(ConfigHTTPServer(robot, cfg.get("http.port", 80), pairing).run())
+    asyncio.create_task(ConfigHTTPServer(robot, cfg.get("http.port"), pairing).run())
     robot.start()
     asyncio.create_task(robot.announce_config_url_task())
 
