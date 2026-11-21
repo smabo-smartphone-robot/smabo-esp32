@@ -64,3 +64,18 @@ if not hasattr(asyncio.StreamWriter, "aclose"):
         except Exception:
             pass
     asyncio.StreamWriter.aclose = _aclose
+
+
+def defaults_at(path, default=None):
+    """The value at a dotted path in config.DEFAULTS, for the fake configs.
+
+    The firmware reads ``cfg.get(path)`` without a fallback (Config always
+    merges DEFAULTS), so a fake config falls back to the real defaults too.
+    """
+    from config import DEFAULTS
+    node = DEFAULTS
+    for key in path.split("."):
+        if not isinstance(node, dict) or key not in node:
+            return default
+        node = node[key]
+    return node

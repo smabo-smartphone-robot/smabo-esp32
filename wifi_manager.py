@@ -25,7 +25,7 @@ async def connect(cfg):
     """
     ssid     = cfg.get("wifi.ssid")
     password = cfg.get("wifi.password")
-    hostname = cfg.get("wifi.hostname", "esp32-robot")
+    hostname = cfg.get("wifi.hostname")
 
     # mDNS ホスト名を設定（network.hostname は active() より前に呼ぶ必要がある）
     try:
@@ -37,6 +37,12 @@ async def connect(cfg):
     sta.active(True)
     try:
         sta.config(dhcp_hostname=hostname)
+    except Exception:
+        pass
+    # Wi-Fi power saving delays every ACK by up to a beacon interval, which
+    # caps TCP to a few KB/s: too slow for /scan. Keep the radio awake.
+    try:
+        sta.config(pm=sta.PM_NONE)
     except Exception:
         pass
 

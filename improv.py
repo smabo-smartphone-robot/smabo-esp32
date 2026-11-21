@@ -302,7 +302,7 @@ class ImprovBle:
             raise ImprovError(ERROR_UNABLE_TO_CONNECT)
         self.cfg.update({"wifi": {"ssid": ssid, "password": password}})
         self.cfg.save_now()
-        port = self.cfg.get("http.port", 80)
+        port = self.cfg.get("http.port")
         url = "http://%s%s/" % (self.sta.ifconfig()[0], "" if port == 80 else ":%d" % port)
         print("Improv: connected; config at", url)
         self._set_state(STATE_PROVISIONED)
@@ -335,10 +335,10 @@ def start(cfg, sta, on_brain=None):
     ``on_brain(host, port)`` is called when smabo-web sends the brain's address
     with an invite (the WebSocket client should reconnect there).
     """
-    if sta.isconnected() or not cfg.get("improv.enabled", True):
+    if sta.isconnected() or not cfg.get("improv.enabled"):
         return None
     try:
-        improv = ImprovBle(cfg, sta, cfg.get("improv.name") or "smabo-" + cfg.get("wifi.hostname", "esp32"),
+        improv = ImprovBle(cfg, sta, cfg.get("improv.name") or "smabo-" + cfg.get("wifi.hostname"),
                            on_brain)
     except Exception as e:  # no bluetooth module, BLE busy, out of memory
         print("Improv: unavailable", e)

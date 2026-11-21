@@ -7,6 +7,7 @@ import types
 import pytest
 
 import improv
+from conftest import defaults_at
 from improv import (CMD_WIFI_SETTINGS, ERROR_INVALID_RPC, ERROR_UNABLE_TO_CONNECT,
                     ERROR_UNKNOWN_RPC, STATE_AUTHORIZED, STATE_PROVISIONED, ImprovError,
                     RpcBuffer, adv_payload, checksum, parse_wifi_settings, rpc_result)
@@ -127,7 +128,7 @@ class FakeCfg:
         node = self.data
         for k in path.split("."):
             if not isinstance(node, dict) or k not in node:
-                return default
+                return defaults_at(path, default)
             node = node[k]
         return node
 

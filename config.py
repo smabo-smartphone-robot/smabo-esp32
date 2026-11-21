@@ -162,7 +162,16 @@ DEFAULTS = {
         "max_angular": 1.50,       # rad/s mapped to full duty
         "wheel_radius": 0.030,     # m
         "wheel_separation": 0.130,  # m (track width, centre to centre of the tyres)
-        "min_duty": 0.0,           # static-friction floor for any non-zero wheel duty (0 = off)
+        "min_duty": 0.0,           # floor for any non-zero wheel duty: keeps a turning wheel from stalling (0 = off)
+        "start_duty": 0.0,         # kick-start duty from rest / on reversing: breaks static friction (0 = off)
+        "kick_ms": 150,            # how long the kick-start lasts
+        # encoder_drive only: PI wheel speed control from the encoders (dc_drive
+        # stays open loop). min_duty / start_duty are not used while it runs.
+        "speed_control": True,
+        "speed_kp": 2.0,           # duty per m/s of wheel speed error
+        "speed_ki": 15.0,          # duty per m of accumulated error
+        "speed_i_max": 0.6,        # integrator limit: caps the duty a dead encoder can cause
+        "brake": True,             # stop by short-braking the motors (False = coast)
         "invert_left": False,
         "invert_right": False,
         "cmd_timeout": 0.5,        # s; stop motors if no cmd_vel within this
@@ -206,6 +215,12 @@ DEFAULTS = {
         "bins": 360,               # /scan ranges length (1 bin ≈ 1°)
         "range_min": 0.05,
         "range_max": 12.0,
+        # turning the lidar's angles into the robot's: ROS angle =
+        # (-raw if clockwise else raw) + angle_offset (deg, counter-clockwise
+        # positive). LD06/LD19 and YDLIDAR-type lidars measure clockwise.
+        # If something straight ahead shows up at the left (+90 deg), set -90.
+        "clockwise": True,
+        "angle_offset": 0.0,
     },
 }
 

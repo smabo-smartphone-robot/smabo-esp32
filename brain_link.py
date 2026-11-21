@@ -53,7 +53,17 @@ class BrainLink:
         self.ws.broadcast(json.dumps(frame))
 
     def publish(self, topic, msg):
-        """Publish ``msg`` on the canonical ``topic`` (the /esp32 prefix is added)."""
+        """Publish ``msg`` on the canonical ``topic`` (the /esp32 prefix is added).
+
+        ``msg`` is a dict, or already-encoded JSON (bytes / memoryview), which
+        is copied into the frame as is: /scan uses this to avoid building a
+        large dict and string on the ESP32's small heap.
+        """
+        if isinstance(msg, (bytes, bytearray, memoryview)):
+            head = '{"op":"publish","topic":"%s%s","msg":' % (SOURCE_PREFIX, topic)
+            # latest only: a newer one replaces one still waiting to be sent
+            self.ws.broadcast((head.encode(), msg, b"}"), key=topic)
+            return
         self._send({"op": "publish", "topic": SOURCE_PREFIX + topic, "msg": msg})
 
     def notice(self, message):

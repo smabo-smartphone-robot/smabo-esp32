@@ -96,7 +96,7 @@ mpremote connect /dev/ttyUSB0 repl
 | `pca9685.py` | PCA9685 PWM ドライバ（サーボ用 I2C） |
 | `servo_controller.py` | JointGroup（全サーボ共通） |
 | `random_motion.py` | グループ単位のランダム動作 |
-| `dc_motors.py` | TB6612 差動駆動（cmd_vel受信・デッドマン停止） |
+| `dc_motors.py` | TB6612 差動駆動（cmd_vel受信・車輪速度制御・デッドマン停止） |
 | `encoder.py` | GPIO割り込みによるエンコーダカウント |
 | `wheel_publisher.py` | エンコーダ → ホイール速度（/wheel_vel）送信 |
 | `lidar_ld06.py` | LD06 ライダ（UART直結）→ `/scan`（sensor_msgs/LaserScan）送信。Nav2 のセンサ入力 |
@@ -183,6 +183,27 @@ LD06 ライダをマイコンの UART に直結（ライダ TX → MCU RX）し�
 
 有効化は REST（`POST /mode {"lidar": true}`）か `config.json` の `modes.lidar`。
 UART ピン変更は再起動せずホットリロードします。
+
+### 車輪速度制御（`modes.encoder_drive`）
+
+`encoder_drive` では、エンコーダで測った車輪速度が `cmd_vel` の指令速度に合うよう、
+車輪ごとに PI 制御で duty を補正します（`/wheel_vel` と同じ 20 Hz 周期）。
+`dc_drive`（エンコーダなし）は従来どおり指令を duty に換算するだけの開ループです。
+
+- フィードフォワードは開ループと同じ換算（`max_linear` / `max_angular`）。摩擦や電池電圧の分を積分項が補います。
+- 開ループ用の `min_duty`（duty の下限）と `start_duty` / `kick_ms`（起動キック）は使いません。
+  キックは行き過ぎて急回転を起こすため、代わりに前回の走行で積分項が求めた値から起動します。
+- 積分項は `speed_i_max` で頭打ちにし、エンコーダが外れても全開で回り続けないようにしています。
+
+| `dc` 設定 | 既定 | 説明 |
+|---|---|---|
+| `speed_control` | `true` | `false` で `encoder_drive` でも開ループに戻す |
+| `speed_kp` | `2.0` | 比例ゲイン（duty / (m/s)） |
+| `speed_ki` | `15.0` | 積分ゲイン（duty / m） |
+| `speed_i_max` | `0.6` | 積分項の上限（duty） |
+
+TT ギアモータは極低速（車輪 10 rpm 以下）で連続回転できないため、その付近では
+回る・止まるを繰り返しながら平均で指令速度になります。
 
 ## テスト
 
